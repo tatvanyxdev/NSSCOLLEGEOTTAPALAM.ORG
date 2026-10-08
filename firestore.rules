@@ -1,0 +1,87 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny all unspecified access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidComplaint(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.ticketNumber is string && data.ticketNumber.size() <= 64
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 300
+        && data.description is string && data.description.size() > 0 && data.description.size() <= 5000
+        && data.category is string && data.category.size() <= 64
+        && data.scope is string && (data.scope == 'CAMPUS_WIDE' || data.scope == 'DEPARTMENT_WISE')
+        && data.status is string && (
+          data.status == 'SUBMITTED' ||
+          data.status == 'UNDER_INVESTIGATION' ||
+          data.status == 'ACTION_TAKEN' ||
+          data.status == 'RESOLVED' ||
+          data.status == 'DISMISSED'
+        )
+        && data.submittedAt is string && data.submittedAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidPushNotification(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+        && data.body is string && data.body.size() > 0 && data.body.size() <= 2000
+        && data.senderRole is string && (
+          data.senderRole == 'PRINCIPAL' ||
+          data.senderRole == 'HOD' ||
+          data.senderRole == 'SUPER_ADMIN'
+        )
+        && data.senderName is string && data.senderName.size() <= 128
+        && data.targetAudience is string && data.targetAudience.size() <= 64
+        && data.priority is string && (
+          data.priority == 'NORMAL' ||
+          data.priority == 'HIGH' ||
+          data.priority == 'EMERGENCY'
+        )
+        && data.category is string && data.category.size() <= 64
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    // Complaints Collection
+    match /complaints/{complaintId} {
+      allow get: if isValidId(complaintId);
+      allow list: if true;
+      allow create: if isValidId(complaintId)
+        && isValidComplaint(incoming())
+        && incoming().id == complaintId
+        && incoming().status == 'SUBMITTED';
+      allow update: if isValidId(complaintId)
+        && isValidComplaint(incoming())
+        && incoming().id == existing().id
+        && incoming().ticketNumber == existing().ticketNumber
+        && incoming().submittedAt == existing().submittedAt;
+      allow delete: if false;
+    }
+
+    // Push Notifications Collection
+    match /push_notifications/{notificationId} {
+      allow get, list: if true;
+      allow create: if isValidId(notificationId)
+        && isValidPushNotification(incoming())
+        && incoming().id == notificationId;
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}

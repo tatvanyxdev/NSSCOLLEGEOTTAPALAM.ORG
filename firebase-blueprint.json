@@ -1,0 +1,224 @@
+{
+  "entities": {
+    "complaint": {
+      "title": "Complaint",
+      "description": "Statutory grievance, vigilance report, or department-wise complaint record",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the complaint record"
+        },
+        "ticketNumber": {
+          "type": "string",
+          "description": "Human-readable tracking ticket number (e.g. GRV-2026-7842)"
+        },
+        "title": {
+          "type": "string",
+          "description": "Subject title of the grievance"
+        },
+        "description": {
+          "type": "string",
+          "description": "Detailed narrative description of the issue"
+        },
+        "category": {
+          "type": "string",
+          "description": "Complaint category code",
+          "enum": [
+            "ANTI_RAGGING",
+            "ANTI_DRUG",
+            "INFRASTRUCTURE",
+            "WOMEN_ICC",
+            "CAMPUS_ADMINISTRATION",
+            "DEPT_ACADEMICS",
+            "DEPT_LAB_EQUIPMENT",
+            "DEPT_INTERNAL_MARKS",
+            "DEPT_FACILITY_OTHER"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "description": "Scope of grievance: CAMPUS_WIDE or DEPARTMENT_WISE",
+          "enum": ["CAMPUS_WIDE", "DEPARTMENT_WISE"]
+        },
+        "departmentId": {
+          "type": "string",
+          "description": "Department ID if scope is DEPARTMENT_WISE"
+        },
+        "departmentName": {
+          "type": "string",
+          "description": "Name of department if scope is DEPARTMENT_WISE"
+        },
+        "locationOnCampus": {
+          "type": "string",
+          "description": "Location of incident on campus"
+        },
+        "incidentDate": {
+          "type": "string",
+          "description": "Date of incident (YYYY-MM-DD)"
+        },
+        "urgency": {
+          "type": "string",
+          "description": "Priority level",
+          "enum": ["LOW", "MEDIUM", "HIGH", "EMERGENCY"]
+        },
+        "isAnonymous": {
+          "type": "boolean",
+          "description": "Whether complainant filed anonymously"
+        },
+        "complainantName": {
+          "type": "string",
+          "description": "Name of the complainant"
+        },
+        "complainantRole": {
+          "type": "string",
+          "description": "Role of complainant",
+          "enum": ["STUDENT", "FACULTY", "PARENT", "VISITOR", "ANONYMOUS"]
+        },
+        "complainantAdmissionNo": {
+          "type": "string",
+          "description": "Student admission number if applicable"
+        },
+        "complainantPhone": {
+          "type": "string",
+          "description": "Complainant contact phone"
+        },
+        "complainantEmail": {
+          "type": "string",
+          "description": "Complainant contact email"
+        },
+        "status": {
+          "type": "string",
+          "description": "Resolution status",
+          "enum": [
+            "SUBMITTED",
+            "UNDER_INVESTIGATION",
+            "ACTION_TAKEN",
+            "RESOLVED",
+            "DISMISSED"
+          ]
+        },
+        "actionNotes": {
+          "type": "array",
+          "description": "Chronological official action notes"
+        },
+        "resolutionSummary": {
+          "type": "string",
+          "description": "Final resolution explanation"
+        },
+        "resolvedAt": {
+          "type": "string",
+          "description": "Timestamp when complaint was resolved"
+        },
+        "resolvedBy": {
+          "type": "string",
+          "description": "Officer or authority who resolved the complaint"
+        },
+        "assignedOfficer": {
+          "type": "string",
+          "description": "Assigned handling unit or officer designation"
+        },
+        "submittedAt": {
+          "type": "string",
+          "description": "ISO timestamp of submission"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      },
+      "required": ["id", "ticketNumber", "title", "description", "category", "scope", "status", "submittedAt", "updatedAt"]
+    },
+    "push_notification": {
+      "title": "Push Notification",
+      "description": "Real-time push notification broadcast dispatched by Principal, HOD, or Super Admin",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the push notification"
+        },
+        "title": {
+          "type": "string",
+          "description": "Headline of the push notification alert"
+        },
+        "body": {
+          "type": "string",
+          "description": "Message text and directive content"
+        },
+        "senderRole": {
+          "type": "string",
+          "description": "Role of the broadcasting authority",
+          "enum": ["PRINCIPAL", "HOD", "SUPER_ADMIN"]
+        },
+        "senderName": {
+          "type": "string",
+          "description": "Display name of the sender"
+        },
+        "senderDepartmentId": {
+          "type": "string",
+          "description": "Department ID of the sending authority if HOD"
+        },
+        "senderDepartmentName": {
+          "type": "string",
+          "description": "Department name of the sending authority if HOD"
+        },
+        "targetAudience": {
+          "type": "string",
+          "description": "Target audience group for the push message",
+          "enum": [
+            "ALL_CAMPUS",
+            "ALL_STUDENTS",
+            "ALL_FACULTY",
+            "ALL_HODS",
+            "MY_DEPARTMENT",
+            "DEPARTMENT_STUDENTS",
+            "DEPARTMENT_FACULTY",
+            "SPECIFIC_DEPARTMENT"
+          ]
+        },
+        "targetDepartmentId": {
+          "type": "string",
+          "description": "Target department ID if targeted to a specific department"
+        },
+        "targetDepartmentName": {
+          "type": "string",
+          "description": "Target department name if targeted to a specific department"
+        },
+        "targetBatch": {
+          "type": "string",
+          "description": "Target academic batch or semester"
+        },
+        "priority": {
+          "type": "string",
+          "description": "Urgency priority level",
+          "enum": ["NORMAL", "HIGH", "EMERGENCY"]
+        },
+        "category": {
+          "type": "string",
+          "description": "Category tag of the alert",
+          "enum": ["GENERAL", "ACADEMIC", "EXAM", "EMERGENCY", "EVENT", "MAINTENANCE"]
+        },
+        "actionUrl": {
+          "type": "string",
+          "description": "Optional in-app navigation link"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp when the push message was broadcast"
+        }
+      },
+      "required": ["id", "title", "body", "senderRole", "senderName", "targetAudience", "priority", "category", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/complaints/{complaintId}": {
+      "schema": "complaint",
+      "description": "All campus-wide and department-wise complaints and grievances"
+    },
+    "/push_notifications/{notificationId}": {
+      "schema": "push_notification",
+      "description": "Real-time push notification broadcasts dispatched by Principal, HOD, or Super Admin"
+    }
+  }
+}

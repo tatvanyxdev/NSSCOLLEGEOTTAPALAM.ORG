@@ -1,0 +1,6 @@
+{
+  "name": "NSS College Ottapalam - FYUGP College ERP",
+  "description": "Comprehensive FYUGP-compatible attendance management and all-in-one college portal for NSS College Ottapalam.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
