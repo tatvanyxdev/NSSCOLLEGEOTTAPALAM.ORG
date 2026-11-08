@@ -19,8 +19,17 @@ import {
   Layers,
   Building2,
   Copy,
-  Check
+  Check,
+  Award,
+  AlertTriangle,
+  FileText,
+  ShieldCheck,
+  Sparkles,
+  Loader2
 } from 'lucide-react';
+import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
+import { auth as firebaseAuth } from '../../lib/firebase';
+import { firebaseSyncService } from '../../services/firebaseSyncService';
 
 export const StudentIndividualProfileView: React.FC = () => {
   const { user } = useAuth();
@@ -31,7 +40,8 @@ export const StudentIndividualProfileView: React.FC = () => {
     courses,
     courseOfferings,
     studentCourseRegistrations,
-    updateStudent
+    updateStudent,
+    getStudentAttendanceSummary
   } = useCollegeData();
 
   // Strictly isolate to this logged in student only - NEVER leak other students
@@ -57,6 +67,53 @@ export const StudentIndividualProfileView: React.FC = () => {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
 
+  const [isLinkingGoogle, setIsLinkingGoogle] = useState(false);
+  const [googleLinkSuccess, setGoogleLinkSuccess] = useState<string | null>(null);
+  const [googleLinkError, setGoogleLinkError] = useState<string | null>(null);
+
+  const handleLinkGoogle = async () => {
+    if (!currentStudent) return;
+    setIsLinkingGoogle(true);
+    setGoogleLinkError(null);
+    setGoogleLinkSuccess(null);
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      const cred = await signInWithPopup(firebaseAuth, provider);
+      const gUser = cred.user;
+      const cleanEmail = (gUser.email || '').trim().toLowerCase();
+
+      if (!cleanEmail) {
+        setGoogleLinkError('No email returned from Google.');
+        setIsLinkingGoogle(false);
+        return;
+      }
+
+      await firebaseSyncService.syncGoogleAccountLink({
+        id: cleanEmail.replace(/[^a-zA-Z0-9_-]/g, '_'),
+        email: cleanEmail,
+        userType: 'STUDENT',
+        profileId: currentStudent.id,
+        name: currentStudent.fullName,
+        identifier: currentStudent.universityRegisterNumber || currentStudent.admissionNumber,
+        linkedAt: new Date().toISOString()
+      });
+
+      await updateStudent(currentStudent.id, {
+        email: cleanEmail,
+        profilePhotoUrl: currentStudent.profilePhotoUrl || gUser.photoURL || undefined
+      });
+
+      setGoogleLinkSuccess(`Connected Google Account (${cleanEmail})! 1-Tap sign-in is active.`);
+      setIsLinkingGoogle(false);
+    } catch (err: any) {
+      if (err?.code !== 'auth/popup-closed-by-user') {
+        setGoogleLinkError(err?.message || 'Failed to link Google account.');
+      }
+      setIsLinkingGoogle(false);
+    }
+  };
+
   if (!currentStudent) {
     return (
       <div className="bg-white rounded-2xl p-10 border border-slate-200 text-center max-w-lg mx-auto my-12 shadow-xs">
@@ -74,6 +131,7 @@ export const StudentIndividualProfileView: React.FC = () => {
 
   // Get student's enrolled courses
   const myRegistrations = studentCourseRegistrations.filter(r => r.studentId === currentStudent.id);
+  const attendanceSummary = currentStudent ? getStudentAttendanceSummary(currentStudent.id) : null;
 
   const getCourseForReg = (offeringId: string) => {
     const off = courseOfferings.find(o => o.id === offeringId);
@@ -262,6 +320,192 @@ export const StudentIndividualProfileView: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* Card: Official Attendance & Duty Sanction Register */}
+          {attendanceSummary && (
+            <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-2xs space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-indigo-50 text-indigo-700">
+                    <ShieldCheck className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">Official Attendance & Special Duty Register</h3>
+                    <p className="text-xs text-slate-500">Regular classes vs. Principal-sanctioned Union / Political duty</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`px-3 py-1 rounded-full text-xs font-bold border ${
+                      attendanceSummary.consolidatedPercentage >= 75
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : attendanceSummary.consolidatedPercentage >= 70
+                        ? 'bg-amber-50 text-amber-800 border-amber-200'
+                        : 'bg-rose-50 text-rose-800 border-rose-200'
+                    }`}
+                  >
+                    {attendanceSummary.consolidatedPercentage >= 75
+                      ? 'Exam Eligible (Compliant)'
+                      : attendanceSummary.consolidatedPercentage >= 70
+                      ? 'Attendance Shortage (Warning)'
+                      : 'Critical Shortage (Condonation)'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Attendance Triple Metrics Breakdown */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                {/* 1. Regular Academic Attendance */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-1">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block">
+                    Regular Academic Attendance
+                  </span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-slate-800 font-mono">
+                      {attendanceSummary.regularPercentage}%
+                    </span>
+                    <span className="text-xs text-slate-500">
+                      ({attendanceSummary.totalPresent} hrs)
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-tight">
+                    Marked directly by course faculty in lecture periods.
+                  </p>
+                </div>
+
+                {/* 2. Special Duty Attendance */}
+                <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200/80 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-amber-900 block">
+                      Special / Union Duty
+                    </span>
+                    {attendanceSummary.specialDutyPendingCount > 0 && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 font-bold">
+                        {attendanceSummary.specialDutyPendingCount} Pending
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-amber-900 font-mono">
+                      +{attendanceSummary.specialDutyApprovedCount} hrs
+                    </span>
+                    <span className="text-xs text-amber-700">sanctioned</span>
+                  </div>
+                  <p className="text-[11px] text-amber-800 leading-tight">
+                    College Union, student delegation & official representation.
+                  </p>
+                </div>
+
+                {/* 3. Consolidated Official Total */}
+                <div className="p-4 rounded-xl bg-indigo-50/70 border border-indigo-200/80 space-y-1">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-950 block">
+                    Consolidated Total Attendance
+                  </span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-black text-indigo-900 font-mono">
+                      {attendanceSummary.consolidatedPercentage}%
+                    </span>
+                    <span className="text-xs text-indigo-700">
+                      ({attendanceSummary.consolidatedTotalAttended}/{attendanceSummary.totalConducted} hrs)
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-indigo-900 font-semibold leading-tight">
+                    Official percentage for university exam hall tickets.
+                  </p>
+                </div>
+              </div>
+
+              {/* Special Duty Submissions & Approvals List for this Student */}
+              {attendanceSummary.studentSpecialEvents && attendanceSummary.studentSpecialEvents.length > 0 && (
+                <div className="space-y-2.5 pt-2 border-t border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Award className="w-3.5 h-3.5 text-amber-600" />
+                      Special Attendance Sanctions & Orders
+                    </span>
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      {attendanceSummary.studentSpecialEvents.length} Record(s) Found
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {attendanceSummary.studentSpecialEvents.map(evt => {
+                      const isApproved = evt.status === 'APPROVED' || evt.status === 'APPLIED';
+                      const isPending = evt.status === 'PENDING_PRINCIPAL' || evt.status === 'FORWARDED_TO_PRINCIPAL';
+
+                      return (
+                        <div
+                          key={evt.id}
+                          className={`p-3 rounded-xl border text-xs space-y-2 transition-all ${
+                            isApproved
+                              ? 'bg-emerald-50/40 border-emerald-200'
+                              : isPending
+                              ? 'bg-amber-50/50 border-amber-200'
+                              : 'bg-rose-50/40 border-rose-200'
+                          }`}
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                            <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                              {evt.title}
+                            </div>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border shrink-0 ${
+                                isApproved
+                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                  : isPending
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                  : 'bg-rose-100 text-rose-800 border-rose-300'
+                              }`}
+                            >
+                              {isApproved
+                                ? 'Principal Sanctioned & Consolidated'
+                                : isPending
+                                ? 'Forwarded by HOD • Awaiting Principal'
+                                : 'Returned by Principal'}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600">
+                            <span>
+                              <strong>Date:</strong> {evt.eventDate}
+                            </span>
+                            <span>•</span>
+                            <span>
+                              <strong>Periods:</strong> {evt.isFullDay ? 'Full Day' : `${evt.periodsCount} Period(s)`}
+                            </span>
+                            {evt.dutyCertificateRef && (
+                              <>
+                                <span>•</span>
+                                <span>
+                                  <strong>Certificate Ref:</strong>{' '}
+                                  <span className="font-mono text-slate-800 font-semibold">{evt.dutyCertificateRef}</span>
+                                </span>
+                              </>
+                            )}
+                            {evt.forwardedByHodName && (
+                              <>
+                                <span>•</span>
+                                <span>
+                                  <strong>Forwarded by HOD:</strong> {evt.forwardedByHodName}
+                                </span>
+                              </>
+                            )}
+                          </div>
+
+                          {evt.principalRemarks && (
+                            <div className="text-[11px] bg-white/80 p-2 rounded-lg border border-slate-200/60 text-slate-700">
+                              <span className="font-semibold text-slate-900">Principal Remarks:</span> {evt.principalRemarks}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Card 2: Allocated Courses (Major, Minor, MDC, AEC, SEC) */}
           <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-2xs space-y-4">
@@ -459,6 +703,67 @@ export const StudentIndividualProfileView: React.FC = () => {
                 </p>
               </div>
 
+              {/* Google 1-Tap Authentication Card */}
+              <div className="p-3.5 bg-gradient-to-br from-blue-50/70 to-indigo-50/70 rounded-xl border border-blue-100 text-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                    </svg>
+                    <span className="font-bold text-xs text-slate-900">Google Sign-In</span>
+                  </div>
+                  {currentStudent.email ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Linked
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
+                      Not Linked
+                    </span>
+                  )}
+                </div>
+
+                {currentStudent.email ? (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] text-slate-600">
+                      Registered email: <span className="font-mono font-semibold text-slate-800">{currentStudent.email}</span>
+                    </p>
+                    <button
+                      onClick={handleLinkGoogle}
+                      disabled={isLinkingGoogle}
+                      className="w-full py-1.5 px-3 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-lg font-semibold text-[11px] flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+                    >
+                      {isLinkingGoogle ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-blue-600" />}
+                      <span>Switch / Re-link Google Account</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] text-slate-600">
+                      Connect your Google Account to sign in with 1 tap on your mobile device.
+                    </p>
+                    <button
+                      onClick={handleLinkGoogle}
+                      disabled={isLinkingGoogle}
+                      className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer disabled:opacity-60"
+                    >
+                      {isLinkingGoogle ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                      <span>Connect Google Account</span>
+                    </button>
+                  </div>
+                )}
+
+                {googleLinkSuccess && (
+                  <p className="text-[11px] text-emerald-700 font-medium">{googleLinkSuccess}</p>
+                )}
+                {googleLinkError && (
+                  <p className="text-[11px] text-rose-700 font-medium">{googleLinkError}</p>
+                )}
+              </div>
+
               <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 text-emerald-900 space-y-1">
                 <p className="font-bold flex items-center gap-1.5 text-xs text-emerald-800">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
@@ -471,7 +776,7 @@ export const StudentIndividualProfileView: React.FC = () => {
 
               <button
                 onClick={() => setIsChangePasswordOpen(true)}
-                className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors"
+                className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
               >
                 <KeyRound className="w-4 h-4" /> Change Portal Password
               </button>

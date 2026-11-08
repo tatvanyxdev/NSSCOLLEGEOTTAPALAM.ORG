@@ -69,12 +69,18 @@ export const specialAttendanceService = {
         student_coverage: event.studentCoverage,
         selected_student_ids: event.selectedStudentIds || [],
         reason: event.reason,
-        status: event.status || 'APPLIED',
+        duty_certificate_ref: event.dutyCertificateRef || null,
+        forwarded_by_hod_id: event.forwardedByHodId || null,
+        forwarded_by_hod_name: event.forwardedByHodName || null,
+        forwarded_at: event.forwardedAt || null,
+        status: event.status || 'PENDING_PRINCIPAL',
         created_by: verifiedCreatedBy,
         created_by_name: event.createdByName || 'Authorized Officer',
         created_by_role: event.createdByRole || 'HOD',
         approved_by: event.approvedBy ? await safeFacultyId(event.approvedBy) : null,
         approved_by_name: event.approvedByName || null,
+        principal_remarks: event.principalRemarks || null,
+        principal_action_at: event.principalActionAt || null,
         created_at: serverTimestamp,
         updated_at: serverTimestamp
       };
@@ -105,6 +111,7 @@ export const specialAttendanceService = {
             attendance_status: r.attendanceStatus || 'SPECIAL',
             attendance_source: 'SPECIAL',
             normal_session_conflict_status: r.normalSessionConflictStatus || 'NO_SESSION',
+            original_teacher_status: r.originalTeacherStatus || 'ABSENT',
             remarks: r.remarks || null,
             created_at: serverTimestamp
           });
@@ -149,11 +156,13 @@ export const specialAttendanceService = {
     id: string,
     status: SpecialAttendanceStatus,
     approvedBy?: string,
-    approvedByName?: string
+    approvedByName?: string,
+    principalRemarks?: string
   ): Promise<{ success: boolean; error: Error | null }> {
     try {
       const validId = toValidUuid(id) || id;
       const verifiedApprovedBy = approvedBy ? await safeFacultyId(approvedBy) : null;
+      const serverTimestamp = new Date().toISOString();
       const { error } = await resilientUpdate(
         'special_attendance_events',
         validId,
@@ -161,7 +170,9 @@ export const specialAttendanceService = {
           status,
           approved_by: verifiedApprovedBy,
           approved_by_name: approvedByName || null,
-          updated_at: new Date().toISOString()
+          principal_remarks: principalRemarks || null,
+          principal_action_at: serverTimestamp,
+          updated_at: serverTimestamp
         }
       );
 

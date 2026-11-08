@@ -288,11 +288,16 @@ EXECUTE FUNCTION trg_set_student_default_credentials();
 
 
 ALTER TABLE faculty ADD COLUMN IF NOT EXISTS auth_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
+ALTER TABLE faculty ADD COLUMN IF NOT EXISTS employee_id VARCHAR(100);
 ALTER TABLE faculty ADD COLUMN IF NOT EXISTS employee_code VARCHAR(100);
 ALTER TABLE faculty ADD COLUMN IF NOT EXISTS mobile_number VARCHAR(50);
+ALTER TABLE faculty ADD COLUMN IF NOT EXISTS phone_number VARCHAR(50);
 ALTER TABLE faculty ADD COLUMN IF NOT EXISTS username VARCHAR(100);
 ALTER TABLE faculty ADD COLUMN IF NOT EXISTS password VARCHAR(255);
 ALTER TABLE faculty ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+-- Allow optional Employee Code / PEN for HOD and staff
+ALTER TABLE faculty ALTER COLUMN employee_id DROP NOT NULL;
+ALTER TABLE faculty ALTER COLUMN employee_code DROP NOT NULL;
 
 -- 13. STUDENT COURSE REGISTRATIONS (Cross-Major FYUGP Registrations)
 CREATE TABLE IF NOT EXISTS student_course_registrations (

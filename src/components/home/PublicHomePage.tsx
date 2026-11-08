@@ -19,7 +19,6 @@ import { PrincipalSection } from './PrincipalSection';
 import { AnnouncementsPreview } from './AnnouncementsPreview';
 import { ImportantLinks } from './ImportantLinks';
 import { ContactSection } from './ContactSection';
-import { PublicGrievanceView } from './PublicGrievanceView';
 import { StudentFAQSection } from './StudentFAQSection';
 import { ThemeToggleSwitch, ThemeToggleButton } from '../common/ThemeToggle';
 import { registerBackHandler } from '../../lib/capacitorBridge';
@@ -45,8 +44,7 @@ import {
   CheckCircle2,
   ShieldCheck,
   ChevronRight,
-  Award,
-  ShieldAlert
+  Award
 } from 'lucide-react';
 
 export type PublicPageId =
@@ -56,7 +54,6 @@ export type PublicPageId =
   | 'departments'
   | 'facilities'
   | 'student-life'
-  | 'complaints'
   | 'announcements'
   | 'contact';
 
@@ -71,7 +68,6 @@ const NAV_ITEMS: { id: PublicPageId; label: string; icon: React.ElementType }[] 
   { id: 'departments', label: 'Departments', icon: Building2 },
   { id: 'facilities', label: 'Campus & Library', icon: Trees },
   { id: 'student-life', label: 'Clubs & Cells', icon: Users },
-  { id: 'complaints', label: 'Complaints / Vigilance', icon: ShieldAlert },
   { id: 'announcements', label: 'Notice Board', icon: Megaphone },
   { id: 'contact', label: 'Contact', icon: PhoneCall }
 ];
@@ -462,7 +458,6 @@ const PublicHomePageInner: React.FC<PublicHomePageProps> = ({ onLoginClick }) =>
             >
               <StudentFAQSection
                 onLoginClick={handleOpenLogin}
-                onNavigateToGrievances={() => navigateTo('complaints')}
               />
             </motion.div>
           </>
@@ -554,20 +549,6 @@ const PublicHomePageInner: React.FC<PublicHomePageProps> = ({ onLoginClick }) =>
           </div>
         )}
 
-        {/* DEDICATED SUB-PAGE: COMPLAINTS & GRIEVANCE REDRESSAL CELL */}
-        {activePage === 'complaints' && (
-          <div>
-            <SubPageHeader
-              title="Statutory Grievance & Whistleblower Redressal Cell"
-              subtitle="Confidential Anti-Ragging, Anti-Drug Reporting, Infrastructure & Department Grievances"
-              onBack={() => navigateTo('home')}
-              onLoginClick={handleOpenLogin}
-            />
-            <PublicGrievanceView onLoginClick={handleOpenLogin} />
-            <SubPageBottomNav onBack={() => navigateTo('home')} onLoginClick={handleOpenLogin} />
-          </div>
-        )}
-
         {/* DEDICATED SUB-PAGE: CONTACT & LOCATION */}
         {activePage === 'contact' && (
           <div>
@@ -644,12 +625,6 @@ const PublicHomePageInner: React.FC<PublicHomePageProps> = ({ onLoginClick }) =>
                     className="hover:text-white transition-colors"
                   >
                     Student FAQs & Help Desk
-                  </button>
-                </li>
-                <li>
-                  <button onClick={() => navigateTo('complaints')} className="hover:text-amber-300 text-rose-300 font-semibold transition-colors flex items-center gap-1.5">
-                    <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Complaints & Grievance Cell</span>
                   </button>
                 </li>
               </ul>

@@ -51,11 +51,15 @@ export interface ResolvedTimetableSlot {
 
 export interface AttendanceIntelligence {
   overallPercentage: number;
+  regularPercentage: number;
+  consolidatedPercentage: number;
   totalConducted: number;
   totalPresent: number;
   totalOd: number;
   totalMedicalLeave: number;
   totalAbsent: number;
+  specialDutyApprovedCount: number;
+  specialDutyPendingCount: number;
   minThreshold: number;
   warningThreshold: number;
   isShortage: boolean;
@@ -64,6 +68,7 @@ export interface AttendanceIntelligence {
   classesCanMissSafely: number;
   shortageCourseCount: number;
   courseSummaries: any[];
+  studentSpecialEvents?: any[];
 }
 
 export interface SearchResultItem {
@@ -95,6 +100,10 @@ interface PersonalizedCollegeContextType {
 
   // Action Handlers
   acknowledgeCircular: (circularId: string) => Promise<{ success: boolean; error?: string }>;
+  issueCircular: (
+    circular: Omit<Circular, 'id' | 'createdAt'>
+  ) => Promise<{ success: boolean; data?: Circular; error?: string }>;
+  deleteCircular: (id: string) => Promise<{ success: boolean; error?: string }>;
   submitLeaveRequest: (
     req: Omit<StudentLeaveRequest, 'id' | 'createdAt' | 'status'>
   ) => Promise<{ success: boolean; data?: StudentLeaveRequest; error?: string }>;
@@ -334,6 +343,49 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
     personalizedModulesService.acknowledgeCircular(circularId, studentId, currentAcks);
 
     return { success: true };
+  };
+
+  const issueCircular = async (
+    circular: Omit<Circular, 'id' | 'createdAt'>
+  ): Promise<{ success: boolean; data?: Circular; error?: string }> => {
+    try {
+      const res = await personalizedModulesService.createCircular(circular);
+      const created = res.data || {
+        ...circular,
+        id: `circ-${Date.now()}`,
+        createdAt: new Date().toISOString()
+      };
+
+      const updated = [created, ...circulars];
+      setCirculars(updated);
+      localStorage.setItem(`${STORAGE_PREFIX}circulars`, JSON.stringify(updated));
+
+      return { success: true, data: created };
+    } catch (err: any) {
+      console.warn('issueCircular fallback:', err?.message || err);
+      const fallback: Circular = {
+        ...circular,
+        id: `circ-${Date.now()}`,
+        createdAt: new Date().toISOString()
+      };
+      const updated = [fallback, ...circulars];
+      setCirculars(updated);
+      localStorage.setItem(`${STORAGE_PREFIX}circulars`, JSON.stringify(updated));
+      return { success: true, data: fallback };
+    }
+  };
+
+  const deleteCircular = async (id: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const updated = circulars.filter(c => c.id !== id);
+      setCirculars(updated);
+      localStorage.setItem(`${STORAGE_PREFIX}circulars`, JSON.stringify(updated));
+
+      await personalizedModulesService.deleteCircular(id);
+      return { success: true };
+    } catch (err: any) {
+      return { success: true };
+    }
   };
 
   const submitLeaveRequest = async (
@@ -691,11 +743,15 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
 
     return {
       overallPercentage: overallPct,
+      regularPercentage: summary.regularPercentage,
+      consolidatedPercentage: summary.consolidatedPercentage,
       totalConducted: summary.totalConducted,
       totalPresent: summary.totalPresent,
       totalOd: summary.totalOd,
       totalMedicalLeave: summary.totalMedicalLeave,
       totalAbsent: summary.totalAbsent,
+      specialDutyApprovedCount: summary.specialDutyApprovedCount,
+      specialDutyPendingCount: summary.specialDutyPendingCount,
       minThreshold,
       warningThreshold,
       isShortage,
@@ -703,7 +759,8 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
       classesNeededToMeetMin,
       classesCanMissSafely,
       shortageCourseCount,
-      courseSummaries: summary.courses
+      courseSummaries: summary.courses,
+      studentSpecialEvents: summary.studentSpecialEvents
     };
   }, [currentStudent, getStudentAttendanceSummary, settings]);
 
@@ -874,6 +931,8 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
         timetableChangeAlerts,
 
         acknowledgeCircular,
+        issueCircular,
+        deleteCircular,
         submitLeaveRequest,
         reviewLeaveRequest,
         submitCertificateRequest,

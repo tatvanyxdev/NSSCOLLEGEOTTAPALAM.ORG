@@ -345,23 +345,49 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
               ) : (
                 <>
                   {/* Big Metric Display */}
-                  <div className="p-4 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between">
-                    <div>
-                      <span className="text-3xl font-black tracking-tight text-slate-900">
-                        {attendanceIntelligence.overallPercentage}%
-                      </span>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        {attendanceIntelligence.totalPresent + attendanceIntelligence.totalOd} of{' '}
-                        {attendanceIntelligence.totalConducted} class hours attended
-                      </p>
+                  <div className="p-4 rounded-xl bg-slate-50 border border-slate-100 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-3xl font-black tracking-tight text-slate-900">
+                          {attendanceIntelligence.consolidatedPercentage || attendanceIntelligence.overallPercentage}%
+                        </span>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Consolidated Official Attendance
+                        </p>
+                      </div>
+
+                      <div className="text-right text-xs">
+                        <span className="text-slate-400 block font-medium">Class Hours</span>
+                        <span className="font-bold text-slate-800 font-mono">
+                          {attendanceIntelligence.totalPresent + attendanceIntelligence.totalOd + (attendanceIntelligence.specialDutyApprovedCount || 0)} / {attendanceIntelligence.totalConducted}
+                        </span>
+                      </div>
                     </div>
 
-                    <div className="text-right text-xs">
-                      <span className="text-slate-400 block font-medium">On-Duty Sanctioned</span>
-                      <span className="font-bold text-indigo-700 font-mono">
-                        {attendanceIntelligence.totalOd} Hours
-                      </span>
+                    {/* Breakdown Pills: Regular vs Special Duty */}
+                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/60 text-[11px]">
+                      <div className="bg-white p-2 rounded-lg border border-slate-100">
+                        <span className="text-slate-400 block font-semibold">Regular Classes:</span>
+                        <span className="font-bold text-slate-800">
+                          {attendanceIntelligence.regularPercentage}% ({attendanceIntelligence.totalPresent} hrs)
+                        </span>
+                      </div>
+                      <div className="bg-amber-50/70 p-2 rounded-lg border border-amber-200/60">
+                        <span className="text-amber-800 block font-semibold">Union / Special Duty:</span>
+                        <span className="font-bold text-amber-900">
+                          +{attendanceIntelligence.specialDutyApprovedCount || 0} hrs sanctioned
+                        </span>
+                      </div>
                     </div>
+
+                    {attendanceIntelligence.specialDutyPendingCount > 0 && (
+                      <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-100/80 border border-amber-200 text-amber-900 text-[11px] font-semibold">
+                        <Clock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                        <span>
+                          {attendanceIntelligence.specialDutyPendingCount} period(s) union duty forwarded to Principal awaiting approval
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Attendance Guidance / Intelligence Message */}

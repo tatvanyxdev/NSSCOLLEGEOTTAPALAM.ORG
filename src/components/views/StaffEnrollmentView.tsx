@@ -35,6 +35,8 @@ import {
   ArrowRight,
   Sparkles
 } from 'lucide-react';
+import { HodFacultyManagementCard } from '../faculty/HodFacultyManagementCard';
+import { HodSubjectApprovalsCard } from '../faculty/HodSubjectApprovalsCard';
 
 interface StaffEnrollmentViewProps {
   onNavigateToStudents?: () => void;
@@ -137,6 +139,9 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [status, setStatus] = useState<'ACTIVE' | 'ON_LEAVE' | 'RESIGNED' | 'RETIRED'>('ACTIVE');
+  const [quickPresetRole, setQuickPresetRole] = useState<UserRole | null>(null);
+
+  const isHodRegistration = roles.includes('HOD') || quickPresetRole === 'HOD';
 
   const allAvailableRoles: { role: UserRole; label: string; desc: string }[] = isHOD
     ? [
@@ -160,6 +165,7 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
     if (!canAdd) return;
     setEditingFac(null);
     setShowPassword(false);
+    setQuickPresetRole(presetRole);
 
     let defaultTitle = 'Assistant Professor';
     let defaultRoles: UserRole[] = [presetRole];
@@ -196,6 +202,7 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
     if (!canAdd) return;
     setEditingFac(null);
     setShowPassword(false);
+    setQuickPresetRole(null);
 
     setFullName('');
     setEmail('');
@@ -222,6 +229,7 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
     if (!canEdit) return;
     setEditingFac(f);
     setShowPassword(false);
+    setQuickPresetRole(null);
     setFullName(f.fullName);
     setEmail(f.email);
     setMobileNumber(f.mobileNumber || f.phoneNumber || f.phone || '');
@@ -334,6 +342,9 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
         setStaffModalError(`Employee Code "${cleanEmpCode}" is already assigned to ${duplicateEmpCode.fullName}.`);
         return;
       }
+    } else if (!isHodRegistration) {
+      setStaffModalError('Please enter the Employee Code / PEN.');
+      return;
     }
 
     setIsSavingStaff(true);
@@ -350,8 +361,8 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
         mobileNumber: mobileNumber.trim(),
         phoneNumber: mobileNumber.trim(),
         phone: mobileNumber.trim(),
-        employeeCode: cleanEmpCode,
-        employeeId: cleanEmpCode,
+        employeeCode: cleanEmpCode || undefined,
+        employeeId: cleanEmpCode || undefined,
         departmentId: isHOD && hodDeptId ? hodDeptId : departmentId,
         designation,
         qualification: qualification.trim(),
@@ -371,8 +382,8 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
         mobileNumber: mobileNumber.trim(),
         phoneNumber: mobileNumber.trim(),
         phone: mobileNumber.trim(),
-        employeeCode: cleanEmpCode,
-        employeeId: cleanEmpCode,
+        employeeCode: cleanEmpCode || undefined,
+        employeeId: cleanEmpCode || undefined,
         departmentId: isHOD && hodDeptId ? hodDeptId : departmentId,
         designation,
         qualification: qualification.trim(),
@@ -565,6 +576,14 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
           </button>
         )}
       </div>
+
+      {/* Compact Faculty Management & Allocation Suite for HOD */}
+      {isHOD && (
+        <div className="space-y-6">
+          <HodFacultyManagementCard />
+          <HodSubjectApprovalsCard />
+        </div>
+      )}
 
       {/* Metrics Bar */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3">
@@ -859,7 +878,7 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="text-slate-400 font-semibold">Employee / PEN:</span>
                       <span className="font-mono font-bold text-slate-800">
-                        {fac.employeeCode || fac.employeeId || 'PEN-2026-REG'}
+                        {fac.employeeCode || fac.employeeId || 'Not Assigned'}
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5 text-[11px] text-slate-700 truncate">
@@ -997,7 +1016,7 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
                         <div className="text-indigo-700 text-[11px] font-semibold">{fac.designation}</div>
                       </td>
                       <td className="py-3 px-4 font-mono font-bold text-slate-700">
-                        {fac.employeeCode || fac.employeeId || 'PEN-2026-REG'}
+                        {fac.employeeCode || fac.employeeId || '—'}
                       </td>
                       <td className="py-3 px-4 text-slate-600">
                         {dept?.name || 'Administrative Office'}
@@ -1066,7 +1085,15 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
         <Modal
           isOpen={isAddOpen}
           onClose={() => setIsAddOpen(false)}
-          title={editingFac ? 'Edit Staff Details' : 'Add Staff Member'}
+          title={
+            editingFac
+              ? 'Edit Staff Details'
+              : quickPresetRole === 'HOD' || roles.includes('HOD')
+              ? 'Quick Register HOD'
+              : quickPresetRole
+              ? `Quick Register ${quickPresetRole.replace('_', ' ')}`
+              : 'Add Staff Member'
+          }
         >
           <form onSubmit={handleSaveStaff} className="space-y-4">
             {/* Full Name & Title */}
@@ -1119,16 +1146,26 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                  Employee Code / PEN (Permanent Employee Number) <span className="text-rose-500">*</span>
+                  Employee Code / PEN (Permanent Employee Number){' '}
+                  {isHodRegistration ? (
+                    <span className="text-emerald-600 font-semibold text-[11px] lowercase">(optional for hod)</span>
+                  ) : (
+                    <span className="text-rose-500">*</span>
+                  )}
                 </label>
                 <input
                   type="text"
-                  required
+                  required={!isHodRegistration}
                   value={employeeCode}
                   onChange={e => setEmployeeCode(e.target.value)}
-                  placeholder="e.g. PEN-1995-CS01"
+                  placeholder={isHodRegistration ? "e.g. PEN-1995-CS01 (Optional for HOD)" : "e.g. PEN-1995-CS01"}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                 />
+                {isHodRegistration && (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Employee Code is optional when registering an HOD. You can assign it later.
+                  </p>
+                )}
               </div>
 
               <div>

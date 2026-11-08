@@ -95,6 +95,59 @@ export async function resilientInsert<T = any>(
         continue;
       }
 
+      // Catch not-null constraint errors
+      const nullConstraintMatch = errorMsg.match(/null value in column "([^"]+)" of relation "[^"]+" violates not-null constraint/i);
+      if (nullConstraintMatch && nullConstraintMatch[1]) {
+        const notNullCol = nullConstraintMatch[1];
+        const tag = `notnull_${notNullCol}`;
+        if (!triedStripped.has(tag)) {
+          triedStripped.add(tag);
+          if (notNullCol === 'programme_id') {
+            const { data: progList } = await supabase.from('programmes').select('id').limit(1);
+            if (progList && progList.length > 0) {
+              currentPayload.programme_id = progList[0].id;
+              continue;
+            }
+          } else if (notNullCol === 'department_id' || notNullCol === 'home_department_id') {
+            const { data: deptList } = await supabase.from('departments').select('id').limit(1);
+            if (deptList && deptList.length > 0) {
+              currentPayload[notNullCol] = deptList[0].id;
+              continue;
+            }
+          } else if (notNullCol === 'roll_number') {
+            currentPayload.roll_number = currentPayload.admission_number || `R-${Date.now().toString().slice(-4)}`;
+            continue;
+          } else if (notNullCol === 'admission_number') {
+            currentPayload.admission_number = currentPayload.roll_number || `ADM-${Date.now().toString().slice(-4)}`;
+            continue;
+          }
+        }
+      }
+
+      // Catch foreign key constraint mismatches
+      const fkMatch = errorMsg.match(/violates foreign key constraint "([^"]+)"/i);
+      if (fkMatch && fkMatch[1]) {
+        const fkName = fkMatch[1].toLowerCase();
+        const tag = `fk_${fkName}`;
+        if (!triedStripped.has(tag)) {
+          triedStripped.add(tag);
+          if (fkName.includes('programme')) {
+            const { data: progList } = await supabase.from('programmes').select('id').limit(1);
+            if (progList && progList.length > 0) {
+              currentPayload.programme_id = progList[0].id;
+              continue;
+            }
+          } else if (fkName.includes('department')) {
+            const { data: deptList } = await supabase.from('departments').select('id').limit(1);
+            if (deptList && deptList.length > 0) {
+              if ('home_department_id' in currentPayload) currentPayload.home_department_id = deptList[0].id;
+              if ('department_id' in currentPayload) currentPayload.department_id = deptList[0].id;
+              continue;
+            }
+          }
+        }
+      }
+
       return { data: null, error: res.error };
     } catch (err: any) {
       return { data: null, error: err };

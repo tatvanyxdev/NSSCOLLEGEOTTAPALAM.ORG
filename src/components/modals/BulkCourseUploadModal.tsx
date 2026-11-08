@@ -44,6 +44,7 @@ export const BulkCourseUploadModal: React.FC<BulkCourseUploadModalProps> = ({
 
   const [file, setFile] = useState<File | null>(null);
   const [isParsing, setIsParsing] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
   const [parsedRows, setParsedRows] = useState<ParsedCourseRow[]>([]);
   const [filterView, setFilterView] = useState<'ALL' | 'VALID' | 'ERRORS'>('ALL');
 
@@ -99,12 +100,13 @@ export const BulkCourseUploadModal: React.FC<BulkCourseUploadModalProps> = ({
   const processFile = async (uploadedFile: File) => {
     setFile(uploadedFile);
     setIsParsing(true);
+    setParseError(null);
     setImportResults(null);
     try {
       const result = await parseCourseExcelFile(uploadedFile, departments, categories, selectedDeptId);
       setParsedRows(result.rows);
     } catch (err: any) {
-      alert(`Error parsing course spreadsheet: ${err?.message || 'Could not parse Excel'}`);
+      setParseError(`Error parsing course spreadsheet: ${err?.message || 'Could not parse Excel'}`);
       setParsedRows([]);
     } finally {
       setIsParsing(false);
@@ -290,6 +292,19 @@ export const BulkCourseUploadModal: React.FC<BulkCourseUploadModalProps> = ({
             <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200">
               <RefreshCw className="w-6 h-6 animate-spin text-blue-600 mx-auto mb-2" />
               <p className="text-xs font-bold text-slate-700">Reading course rows from spreadsheet...</p>
+            </div>
+          )}
+
+          {/* Parse Error Banner */}
+          {parseError && (
+            <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium flex items-center justify-between">
+              <span>{parseError}</span>
+              <button
+                onClick={() => setParseError(null)}
+                className="ml-3 text-rose-600 hover:text-rose-900 font-bold"
+              >
+                Dismiss
+              </button>
             </div>
           )}
 

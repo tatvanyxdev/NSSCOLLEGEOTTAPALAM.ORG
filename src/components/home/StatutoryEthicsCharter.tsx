@@ -19,7 +19,7 @@ import { COLLEGE_INFO } from '../../config/collegeInfo';
 
 export const StatutoryEthicsCharter: React.FC = () => {
   const [isEthicsModalOpen, setIsEthicsModalOpen] = useState(false);
-  const [activeEthicsTab, setActiveEthicsTab] = useState<'antiragging' | 'icc' | 'grievance' | 'academic'>('antiragging');
+  const [activeEthicsTab, setActiveEthicsTab] = useState<'antiragging' | 'icc' | 'mentorship' | 'academic'>('antiragging');
 
   return (
     <section id="statutory-ethics" className="py-12 sm:py-16 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white border-b border-slate-200 dark:border-rose-950/40 relative overflow-hidden transition-colors duration-200">
@@ -87,7 +87,7 @@ export const StatutoryEthicsCharter: React.FC = () => {
             </div>
           </div>
 
-          {/* 2. Internal Complaints Committee (ICC) & Gender Justice */}
+          {/* 2. Women's Cell & Gender Justice Committee */}
           <div className="rounded-2xl bg-white dark:bg-gradient-to-br dark:from-purple-950/70 dark:via-slate-900 dark:to-slate-950 p-5 border border-purple-200 dark:border-purple-800/50 flex flex-col justify-between group hover:border-purple-400 dark:hover:border-purple-500/80 transition-all hover:-translate-y-0.5 shadow-xs dark:shadow-lg">
             <div>
               <div className="flex items-center justify-between gap-2 mb-3">
@@ -99,7 +99,7 @@ export const StatutoryEthicsCharter: React.FC = () => {
                 </span>
               </div>
               <h3 className="text-base font-bold text-slate-900 dark:text-white font-display group-hover:text-purple-700 dark:group-hover:text-purple-300 transition-colors">
-                Internal Complaints Committee (ICC)
+                Women's Cell & Gender Justice
               </h3>
               <p className="text-xs text-slate-600 dark:text-slate-300 mt-2 leading-relaxed font-light">
                 Constituted under the Sexual Harassment of Women at Workplace (Prevention, Prohibition and Redressal) Act, 2013 to ensure a dignified, safe, and empowering academic atmosphere for all female scholars and staff.
@@ -116,7 +116,7 @@ export const StatutoryEthicsCharter: React.FC = () => {
             </div>
           </div>
 
-          {/* 3. Students' Grievance Redressal Committee (SGRC) */}
+          {/* 3. Student Welfare & Mentorship Advisory */}
           <div className="rounded-2xl bg-white dark:bg-gradient-to-br dark:from-blue-950/70 dark:via-slate-900 dark:to-slate-950 p-5 border border-blue-200 dark:border-blue-800/50 flex flex-col justify-between group hover:border-blue-400 dark:hover:border-blue-500/80 transition-all hover:-translate-y-0.5 shadow-xs dark:shadow-lg">
             <div>
               <div className="flex items-center justify-between gap-2 mb-3">
@@ -128,19 +128,19 @@ export const StatutoryEthicsCharter: React.FC = () => {
                 </span>
               </div>
               <h3 className="text-base font-bold text-slate-900 dark:text-white font-display group-hover:text-blue-700 dark:group-hover:text-blue-300 transition-colors">
-                Students' Grievance Redressal
+                Student Welfare & Mentorship
               </h3>
               <p className="text-xs text-slate-600 dark:text-slate-300 mt-2 leading-relaxed font-light">
-                Established as per UGC Regulations, 2023 to provide a fair, impartial, and transparent mechanism for the prompt redressal of academic evaluations, admissions, and campus welfare grievances.
+                Dedicated student advisory and tutorial mentorship ensuring student well-being, academic progression, fairness in internal evaluations, and campus harmony.
               </p>
             </div>
 
             <div className="mt-4 pt-3 border-t border-blue-100 dark:border-blue-900/60 space-y-1">
               <span className="text-[11px] font-semibold text-blue-800 dark:text-blue-200 block">
-                College Ombudsman Mechanism
+                Tutor-Ward Mentoring System
               </span>
               <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
-                Online submission via ERP Student Portal
+                Continuous guidance across all FYUGP semesters
               </span>
             </div>
           </div>
@@ -232,8 +232,8 @@ export const StatutoryEthicsCharter: React.FC = () => {
             <div className="flex gap-2 border-b border-slate-100 dark:border-slate-800 py-3 overflow-x-auto no-scrollbar">
               {[
                 { id: 'antiragging' as const, label: 'Anti-Ragging Regulations' },
-                { id: 'icc' as const, label: 'ICC & Gender Justice' },
-                { id: 'grievance' as const, label: 'Grievance Redressal (SGRC)' },
+                { id: 'icc' as const, label: 'Gender Justice & Women\'s Cell' },
+                { id: 'mentorship' as const, label: 'Student Welfare & Mentorship' },
                 { id: 'academic' as const, label: 'Academic & Exam Ethics' }
               ].map((tab) => (
                 <button
@@ -262,7 +262,7 @@ export const StatutoryEthicsCharter: React.FC = () => {
                   </div>
                   <h4 className="text-sm font-bold text-slate-900 dark:text-white font-display">Anti-Ragging Committee Protocols:</h4>
                   <ul className="list-disc list-inside space-y-1.5 text-xs text-slate-700 dark:text-slate-300">
-                    <li>Immediate suspension and departmental inquiry following receipt of any complaint.</li>
+                    <li>Immediate suspension and departmental inquiry following receipt of any disciplinary or ragging report.</li>
                     <li>Lodging of First Information Report (FIR) with the local Police Station (Ottapalam PS).</li>
                     <li>Debarring from representing the college in any university youth festival, sports meet, or academic competition.</li>
                     <li>Withholding of scholarships, internal marks, or character and conduct certificates.</li>
@@ -277,39 +277,39 @@ export const StatutoryEthicsCharter: React.FC = () => {
               {activeEthicsTab === 'icc' && (
                 <div className="space-y-3">
                   <h4 className="text-sm font-bold text-slate-900 dark:text-white font-display">
-                    Internal Complaints Committee (ICC) & Women's Protection
+                    Women's Protection & Gender Justice
                   </h4>
                   <p className="text-xs text-slate-700 dark:text-slate-300">
-                    The college has a functional Internal Complaints Committee constituted as per the provisions of Section 4 of the Sexual Harassment of Women at Workplace Act, 2013.
+                    The college provides a dignified, safe, and empowering academic atmosphere for all female scholars and staff under the statutory mandates of the Sexual Harassment of Women at Workplace Act, 2013.
                   </p>
                   <ul className="list-disc list-inside space-y-1.5 text-xs text-slate-700 dark:text-slate-300">
-                    <li>Provides an accessible, non-judgmental, and secure forum for reporting gender discrimination or harassment.</li>
-                    <li>Guarantees strict confidentiality to complainants, witnesses, and respondents during all proceedings.</li>
+                    <li>Provides an accessible, non-judgmental, and secure forum for student safety and gender equity.</li>
+                    <li>Guarantees strict confidentiality and institutional support for all inquiries.</li>
                     <li>Conducts regular gender sensitization and legal awareness workshops in coordination with the Women's Cell.</li>
                   </ul>
                 </div>
               )}
 
-              {activeEthicsTab === 'grievance' && (
+              {activeEthicsTab === 'mentorship' && (
                 <div className="space-y-3">
                   <h4 className="text-sm font-bold text-slate-900 dark:text-white font-display">
-                    Student Grievance Redressal Committee (SGRC)
+                    Student Welfare & Mentorship Advisory
                   </h4>
                   <p className="text-xs text-slate-700 dark:text-slate-300">
-                    Constituted under UGC (Redressal of Grievances of Students) Regulations, 2023, the SGRC handles complaints related to admissions, evaluation, fee concessions, and hostel facilities.
+                    N.S.S. College, Ottapalam operates a structured Tutor-Ward mentorship system for student academic support, guidance, and personal development.
                   </p>
                   <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-1.5 text-xs">
                     <div className="flex justify-between">
                       <span className="text-slate-500 dark:text-slate-400">Level 1:</span>
-                      <span className="font-bold text-slate-900 dark:text-white">Departmental Tutor / Head of Department</span>
+                      <span className="font-bold text-slate-900 dark:text-white">Departmental Tutor / Faculty Advisor</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500 dark:text-slate-400">Level 2:</span>
-                      <span className="font-bold text-slate-900 dark:text-white">Institutional SGRC presided by Principal</span>
+                      <span className="font-bold text-slate-900 dark:text-white">Head of Department (HOD)</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500 dark:text-slate-400">Level 3:</span>
-                      <span className="font-bold text-amber-800 dark:text-amber-300">University of Calicut Student Ombudsperson</span>
+                      <span className="font-bold text-amber-800 dark:text-amber-300">College Principal & Advisory Council</span>
                     </div>
                   </div>
                 </div>

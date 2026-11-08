@@ -63,12 +63,23 @@ export const CourseRegistrationsView: React.FC = () => {
     isStudent ? 'all' : 'allocator'
   );
 
+  // HOD department resolution
+  const isHOD = activeRole === 'HOD';
+  const hodDeptId = isHOD
+    ? user?.departmentId ||
+      user?.facultyProfile?.departmentId ||
+      (user as any)?.department_id ||
+      departments.find(d => d.hodFacultyId === user?.id)?.id ||
+      departments[0]?.id
+    : undefined;
+  const hodDept = departments.find(d => d.id === hodDeptId);
+
   // --- Allocator State ---
   const [selectedStudentId, setSelectedStudentId] = useState<string>(
     students[0]?.id || ''
   );
   const [allocatorDeptFilter, setAllocatorDeptFilter] = useState<string>(
-    activeRole === 'HOD' && user?.departmentId ? user.departmentId : 'ALL'
+    isHOD && hodDeptId ? hodDeptId : 'ALL'
   );
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>(
     courseCategories[0]?.id || 'cat-major'
@@ -89,7 +100,9 @@ export const CourseRegistrationsView: React.FC = () => {
   // --- Master Table State ---
   const [filterCourse, setFilterCourse] = useState<string>('ALL');
   const [filterCategory, setFilterCategory] = useState<string>('ALL');
-  const [filterDept, setFilterDept] = useState<string>('ALL');
+  const [filterDept, setFilterDept] = useState<string>(
+    isHOD && hodDeptId ? hodDeptId : 'ALL'
+  );
   const [searchQuery, setSearchQuery] = useState('');
 
   // Quick Modal State
@@ -384,21 +397,28 @@ export const CourseRegistrationsView: React.FC = () => {
               </div>
 
               {/* Department filter for student selector */}
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500 font-semibold">Filter Dept:</span>
-                <select
-                  value={allocatorDeptFilter}
-                  onChange={e => setAllocatorDeptFilter(e.target.value)}
-                  className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-medium text-slate-700"
-                >
-                  <option value="ALL">All Departments</option>
-                  {departments.map(d => (
-                    <option key={d.id} value={d.id}>
-                      {d.code} - {d.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {isHOD && hodDept ? (
+                <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-50 border border-blue-200 text-xs font-bold text-blue-900">
+                  <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                  <span>{hodDept.name} (HOD Locked)</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500 font-semibold">Filter Dept:</span>
+                  <select
+                    value={allocatorDeptFilter}
+                    onChange={e => setAllocatorDeptFilter(e.target.value)}
+                    className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-medium text-slate-700"
+                  >
+                    <option value="ALL">All Departments</option>
+                    {departments.map(d => (
+                      <option key={d.id} value={d.id}>
+                        {d.code} - {d.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             {/* Student Dropdown Selector */}

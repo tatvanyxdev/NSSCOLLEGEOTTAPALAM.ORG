@@ -38,7 +38,7 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
   hodDeptId,
   onSuccess
 }) => {
-  const { addStudent } = useCollegeData();
+  const { addStudent, programmes } = useCollegeData();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const isHOD = activeRole === 'HOD';
@@ -51,6 +51,7 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
 
   const [file, setFile] = useState<File | null>(null);
   const [isParsing, setIsParsing] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
   const [parsedRows, setParsedRows] = useState<ParsedStudentRow[]>([]);
   const [filterView, setFilterView] = useState<'ALL' | 'VALID' | 'ERRORS'>('ALL');
 
@@ -85,13 +86,14 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
   const processFile = async (uploadedFile: File) => {
     setFile(uploadedFile);
     setIsParsing(true);
+    setParseError(null);
     setImportResults(null);
     try {
       const defaultDept = isHOD ? hodDeptId : selectedDeptId;
       const result = await parseStudentExcelFile(uploadedFile, departments, defaultDept);
       setParsedRows(result.rows);
     } catch (err: any) {
-      alert(`Error reading file: ${err?.message || 'Could not parse Excel spreadsheet'}`);
+      setParseError(`Error reading file: ${err?.message || 'Could not parse Excel spreadsheet'}`);
       setParsedRows([]);
     } finally {
       setIsParsing(false);
@@ -133,7 +135,7 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
           yearOfStudy: Math.ceil((row.currentSemester || 1) / 2),
           admissionBatch: row.admissionBatch || '2026-2030',
           homeDepartmentId: targetDeptId,
-          programmeId: departments.find(d => d.id === targetDeptId)?.id || '',
+          programmeId: programmes.find(p => p.departmentId === targetDeptId)?.id || programmes[0]?.id || 'prog-bsc-cs',
           gender: row.gender || undefined,
           bloodGroup: row.bloodGroup || undefined,
           guardianName: row.guardianName || undefined,
@@ -299,6 +301,19 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
             <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200">
               <RefreshCw className="w-6 h-6 animate-spin text-emerald-600 mx-auto mb-2" />
               <p className="text-xs font-bold text-slate-700">Analyzing spreadsheet data...</p>
+            </div>
+          )}
+
+          {/* Parse Error Banner */}
+          {parseError && (
+            <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium flex items-center justify-between">
+              <span>{parseError}</span>
+              <button
+                onClick={() => setParseError(null)}
+                className="ml-3 text-rose-600 hover:text-rose-900 font-bold"
+              >
+                Dismiss
+              </button>
             </div>
           )}
 

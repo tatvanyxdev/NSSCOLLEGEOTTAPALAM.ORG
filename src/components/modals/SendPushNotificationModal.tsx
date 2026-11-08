@@ -445,7 +445,6 @@ export const SendPushNotificationModal: React.FC<SendPushNotificationModalProps>
               <option value="notices">Official Notices & Circulars</option>
               <option value="resources">Syllabus & QP Question Bank</option>
               <option value="leave-requests">Student Leave & OD Requests</option>
-              <option value="complaints">Grievance & Vigilance Portal</option>
             </select>
           </div>
         </div>

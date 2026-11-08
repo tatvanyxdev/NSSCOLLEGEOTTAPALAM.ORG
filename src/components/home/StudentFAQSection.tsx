@@ -72,11 +72,11 @@ const FAQ_DATA: FAQItem[] = [
   },
   {
     id: 'faq-7',
-    category: 'ATTENDANCE',
-    question: 'Where can I report complaints or grievances with complete confidentiality?',
+    category: 'SERVICES',
+    question: 'How do I contact student academic guidance or faculty counseling?',
     answer:
-      'N.S.S. College, Ottapalam operates a zero-tolerance policy against ragging, substance abuse, and harassment. Use the public "Grievance Portal" on this website to submit an encrypted report anonymously or with identification. National anti-ragging toll-free helpline 1800-180-5522 is also available 24/7.',
-    highlight: '100% Confidential Redressal'
+      'N.S.S. College, Ottapalam provides student mentoring and career guidance desks. You can consult your designated Department Tutor or Faculty Advisor for academic guidance, syllabus advice, and campus support.',
+    highlight: 'Student Mentoring'
   }
 ];
 
@@ -90,8 +90,7 @@ const CATEGORIES = [
 
 export const StudentFAQSection: React.FC<{
   onLoginClick?: () => void;
-  onNavigateToGrievances?: () => void;
-}> = ({ onLoginClick, onNavigateToGrievances }) => {
+}> = ({ onLoginClick }) => {
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedIds, setExpandedIds] = useState<string[]>(['faq-1']);
@@ -288,14 +287,6 @@ export const StudentFAQSection: React.FC<{
           </div>
 
           <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
-            {onNavigateToGrievances && (
-              <button
-                onClick={onNavigateToGrievances}
-                className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold transition-colors cursor-pointer"
-              >
-                Grievance Desk
-              </button>
-            )}
             {onLoginClick && (
               <button
                 onClick={onLoginClick}

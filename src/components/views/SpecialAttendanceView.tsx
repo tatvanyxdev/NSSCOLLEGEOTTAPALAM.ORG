@@ -12,6 +12,7 @@ import {
   Student
 } from '../../types';
 import { Badge, Modal } from '../common/UIComponents';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 import {
   Award,
   PlusCircle,
@@ -31,7 +32,12 @@ import {
   Eye,
   Info,
   Layers,
-  GraduationCap
+  GraduationCap,
+  ShieldCheck,
+  Stamp,
+  CornerDownRight,
+  Database,
+  Copy
 } from 'lucide-react';
 
 export const SpecialAttendanceView: React.FC = () => {
@@ -46,16 +52,58 @@ export const SpecialAttendanceView: React.FC = () => {
     admissionBatches,
     courseGroups,
     students,
-    timetablePeriods
+    timetablePeriods,
+    getStudentAttendanceSummary
   } = useCollegeData();
+
+  const [showSqlModal, setShowSqlModal] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
 
   const { user, activeRole } = useAuth();
   const isAuthorized = canManageSpecialAttendance(activeRole);
   const isHOD = activeRole === 'HOD';
-  const hodDeptId = isHOD ? user?.departmentId : undefined;
+  const isPrincipal = activeRole === 'PRINCIPAL' || activeRole === 'SUPER_ADMIN';
+  
+  // Resolve HOD department safely from user profile or departments mapping
+  const hodDeptId = isHOD
+    ? user?.departmentId ||
+      user?.facultyProfile?.departmentId ||
+      (user as any)?.department_id ||
+      departments.find(d => d.hodFacultyId === user?.id)?.id ||
+      departments[0]?.id
+    : undefined;
+  const hodDept = departments.find(d => d.id === hodDeptId);
 
-  // Active view tab: 'EVENTS' | 'CREATE' | 'STUDENT_RECORDS'
-  const [activeTab, setActiveTab] = useState<'EVENTS' | 'CREATE' | 'STUDENT_RECORDS'>('EVENTS');
+  // Department filter for Principal Queue
+  const [filterApprovalDept, setFilterApprovalDept] = useState<string>('ALL');
+  const [isApprovingAll, setIsApprovingAll] = useState(false);
+  const [selectedApprovalIds, setSelectedApprovalIds] = useState<string[]>([]);
+
+  // Pending Principal approvals
+  const allPendingEvents = useMemo(() => {
+    return specialAttendanceEvents.filter(
+      e => e.status === 'PENDING_PRINCIPAL' || e.status === 'FORWARDED_TO_PRINCIPAL'
+    );
+  }, [specialAttendanceEvents]);
+
+  // Scoped pending events based on department filter or HOD own department
+  const pendingPrincipalEvents = useMemo(() => {
+    return allPendingEvents.filter(e => {
+      if (isHOD && hodDeptId) {
+        return e.departmentId === hodDeptId || e.forwardedByHodId === user?.id;
+      }
+      if (filterApprovalDept !== 'ALL') {
+        return e.departmentId === filterApprovalDept;
+      }
+      return true;
+    });
+  }, [allPendingEvents, isHOD, hodDeptId, user?.id, filterApprovalDept]);
+
+  // Active view tab: 'PRINCIPAL_APPROVALS' | 'EVENTS' | 'CREATE' | 'STUDENT_RECORDS'
+  const [activeTab, setActiveTab] = useState<'PRINCIPAL_APPROVALS' | 'EVENTS' | 'CREATE' | 'STUDENT_RECORDS'>(() => {
+    if (isPrincipal && allPendingEvents.length > 0) return 'PRINCIPAL_APPROVALS';
+    return 'EVENTS';
+  });
 
   // Search & Filters for Events
   const [searchQuery, setSearchQuery] = useState('');
@@ -70,10 +118,21 @@ export const SpecialAttendanceView: React.FC = () => {
   // Event Details Modal
   const [viewingEvent, setViewingEvent] = useState<SpecialAttendanceEvent | null>(null);
 
+  // Principal Approval / Rejection Action States
+  const [approvingEvent, setApprovingEvent] = useState<SpecialAttendanceEvent | null>(null);
+  const [principalOrderNumber, setPrincipalOrderNumber] = useState('');
+  const [principalOrderRemarks, setPrincipalOrderRemarks] = useState('');
+  const [isProcessingApproval, setIsProcessingApproval] = useState(false);
+  const [rejectingEvent, setRejectingEvent] = useState<SpecialAttendanceEvent | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [eventToDelete, setEventToDelete] = useState<SpecialAttendanceEvent | null>(null);
+  const [eventToCancel, setEventToCancel] = useState<SpecialAttendanceEvent | null>(null);
+  const [isDeletingEvent, setIsDeletingEvent] = useState(false);
+
   // Form State for creating special attendance
   const [formTitle, setFormTitle] = useState('');
   const [formDescription, setFormDescription] = useState('');
-  const [formEventType, setFormEventType] = useState<SpecialAttendanceEventType>('COLLEGE_PROGRAMME');
+  const [formEventType, setFormEventType] = useState<SpecialAttendanceEventType>('UNION_PROGRAMME');
   const [formDate, setFormDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
   const [formIsFullDay, setFormIsFullDay] = useState<boolean>(true);
   const [formSelectedPeriodIds, setFormSelectedPeriodIds] = useState<string[]>([]);
@@ -84,6 +143,7 @@ export const SpecialAttendanceView: React.FC = () => {
   const [formCourseGroupId, setFormCourseGroupId] = useState<string>(courseGroups[0]?.id || '');
   const [formStudentCoverage, setFormStudentCoverage] = useState<StudentCoverageType>('ALL_ELIGIBLE');
   const [formSelectedStudentIds, setFormSelectedStudentIds] = useState<string[]>([]);
+  const [formDutyCertificateRef, setFormDutyCertificateRef] = useState('');
   const [formReason, setFormReason] = useState('');
   const [studentPickerSearch, setStudentPickerSearch] = useState('');
 
@@ -99,9 +159,14 @@ export const SpecialAttendanceView: React.FC = () => {
       desc: 'College Day, Arts Fest, Sports Meet, Convocation, Founders Day'
     },
     UNION_PROGRAMME: {
-      label: 'Union / Association',
-      color: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-      desc: 'College Union Inaguration, Department Association Activities'
+      label: 'College Union / Association',
+      color: 'bg-emerald-50 text-emerald-800 border-emerald-300',
+      desc: 'College Union Inaguration, Parliamentary Debates, Zonal Arts / Delegations'
+    },
+    POLITICAL_UNION: {
+      label: 'Political Party / Union Programme',
+      color: 'bg-teal-50 text-teal-800 border-teal-300',
+      desc: 'Political party student wing, college union delegations, state youth convention'
     },
     STRIKE: {
       label: 'Strike / External Disruption',
@@ -115,7 +180,7 @@ export const SpecialAttendanceView: React.FC = () => {
     },
     DEPARTMENT_PROGRAMME: {
       label: 'Department Event',
-      color: 'bg-teal-50 text-teal-700 border-teal-200',
+      color: 'bg-cyan-50 text-cyan-700 border-cyan-200',
       desc: 'Department workshop, seminar, guest lecture, association event'
     },
     SPORTS: {
@@ -169,17 +234,31 @@ export const SpecialAttendanceView: React.FC = () => {
   const eligibleStudentsForForm = useMemo(() => {
     let list: Student[] = [];
     if (formScopeType === 'COLLEGE') {
-      list = students;
+      list = isHOD && hodDeptId
+        ? students.filter(s => s.homeDepartmentId === hodDeptId)
+        : students;
     } else if (formScopeType === 'DEPARTMENT') {
-      list = students.filter(s => s.homeDepartmentId === formDepartmentId || s.departmentId === formDepartmentId);
+      const deptTarget = isHOD && hodDeptId ? hodDeptId : formDepartmentId;
+      list = students.filter(s => s.homeDepartmentId === deptTarget);
     } else if (formScopeType === 'PROGRAMME') {
       list = students.filter(s => s.programmeId === formProgrammeId);
+      if (isHOD && hodDeptId) {
+        list = list.filter(s => s.homeDepartmentId === hodDeptId);
+      }
     } else if (formScopeType === 'BATCH') {
-      list = students.filter(s => s.admissionBatchId === formBatchId || s.batchId === formBatchId);
+      list = students.filter(s => s.admissionBatch === formBatchId || (s as any).admissionBatchId === formBatchId || (s as any).batchId === formBatchId);
+      if (isHOD && hodDeptId) {
+        list = list.filter(s => s.homeDepartmentId === hodDeptId);
+      }
     } else if (formScopeType === 'COURSE_GROUP') {
-      list = students;
+      list = isHOD && hodDeptId
+        ? students.filter(s => s.homeDepartmentId === hodDeptId)
+        : students;
     } else if (formScopeType === 'SELECTED_STUDENTS') {
       list = students.filter(s => formSelectedStudentIds.includes(s.id));
+      if (isHOD && hodDeptId) {
+        list = list.filter(s => s.homeDepartmentId === hodDeptId);
+      }
     }
 
     if (formStudentCoverage === 'SELECTED_ONLY' && formScopeType !== 'SELECTED_STUDENTS') {
@@ -193,7 +272,9 @@ export const SpecialAttendanceView: React.FC = () => {
     formBatchId,
     formStudentCoverage,
     formSelectedStudentIds,
-    students
+    students,
+    isHOD,
+    hodDeptId
   ]);
 
   // Target periods count
@@ -258,6 +339,103 @@ export const SpecialAttendanceView: React.FC = () => {
     });
   }, [specialAttendanceRecords, students, specialAttendanceEvents, recordConflictFilter, recordSearchQuery]);
 
+  // Principal Approval & Rejection Handlers
+  const handleApproveEvent = async (event: SpecialAttendanceEvent, orderRef?: string, remarks?: string) => {
+    setIsProcessingApproval(true);
+    try {
+      const fullRemarks = orderRef
+        ? `Order Ref: ${orderRef}. ${remarks || 'Sanctioned and consolidated.'}`
+        : remarks;
+      const res = await updateSpecialAttendanceStatus(event.id, 'APPROVED', fullRemarks);
+      if (res.success) {
+        setFeedbackMessage({
+          type: 'success',
+          text: `Special Attendance order "${event.title}" has been sanctioned and successfully consolidated into student attendance records!`
+        });
+        setApprovingEvent(null);
+        setSelectedApprovalIds(prev => prev.filter(id => id !== event.id));
+      } else {
+        setFeedbackMessage({
+          type: 'error',
+          text: res.error || 'Failed to approve event.'
+        });
+      }
+    } catch (err: any) {
+      setFeedbackMessage({ type: 'error', text: err?.message || 'Approval failed.' });
+    } finally {
+      setIsProcessingApproval(false);
+    }
+  };
+
+  // Bulk Approval: Approve all pending requests in current filter or selected
+  const handleApproveAllPending = async (eventsToApprove: SpecialAttendanceEvent[]) => {
+    if (!isPrincipal || eventsToApprove.length === 0) return;
+    setIsApprovingAll(true);
+    setFeedbackMessage(null);
+    let successCount = 0;
+    const yr = new Date().getFullYear();
+
+    for (let i = 0; i < eventsToApprove.length; i++) {
+      const evt = eventsToApprove[i];
+      const autoRef = `NSS/PRIN/ATT/${yr}/BATCH-${i + 1}`;
+      const remarks = `Bulk sanctioned by Principal under Ordinance Rule 14. Ref: ${autoRef}.`;
+      const res = await updateSpecialAttendanceStatus(evt.id, 'APPROVED', remarks);
+      if (res.success) {
+        successCount++;
+      }
+    }
+
+    setIsApprovingAll(false);
+    setSelectedApprovalIds([]);
+    setFeedbackMessage({
+      type: 'success',
+      text: `Principal Action Complete: Successfully approved & consolidated ${successCount} of ${eventsToApprove.length} duty attendance requests into student registers!`
+    });
+  };
+
+  const handleToggleSelectApproval = (id: string) => {
+    setSelectedApprovalIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleToggleSelectAllApprovals = (visibleList: SpecialAttendanceEvent[]) => {
+    const visibleIds = visibleList.map(e => e.id);
+    const allSelected = visibleIds.every(id => selectedApprovalIds.includes(id));
+    if (allSelected) {
+      setSelectedApprovalIds(prev => prev.filter(id => !visibleIds.includes(id)));
+    } else {
+      setSelectedApprovalIds(prev => Array.from(new Set([...prev, ...visibleIds])));
+    }
+  };
+
+  const handleRejectEvent = async (event: SpecialAttendanceEvent, reason: string) => {
+    setIsProcessingApproval(true);
+    try {
+      const res = await updateSpecialAttendanceStatus(
+        event.id,
+        'REJECTED',
+        reason || 'Returned by Principal for revision.'
+      );
+      if (res.success) {
+        setFeedbackMessage({
+          type: 'success',
+          text: `Special Attendance order "${event.title}" returned to department HOD.`
+        });
+        setRejectingEvent(null);
+      } else {
+        setFeedbackMessage({
+          type: 'error',
+          text: res.error || 'Failed to return event.'
+        });
+      }
+    } catch (err: any) {
+      setFeedbackMessage({ type: 'error', text: err?.message || 'Action failed.' });
+    } finally {
+      setIsProcessingApproval(false);
+    }
+  };
+
   // Handle Form Submission
   const handleSubmitEvent = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -286,6 +464,8 @@ export const SpecialAttendanceView: React.FC = () => {
 
     setIsSubmitting(true);
     try {
+      const targetStatus: SpecialAttendanceStatus = isPrincipal ? 'APPROVED' : 'PENDING_PRINCIPAL';
+
       const res = await createSpecialAttendanceEvent({
         title: formTitle.trim(),
         description: formDescription.trim() || undefined,
@@ -294,28 +474,40 @@ export const SpecialAttendanceView: React.FC = () => {
         isFullDay: formIsFullDay,
         periodIds: formIsFullDay ? timetablePeriods.map(p => p.id) : formSelectedPeriodIds,
         scopeType: formScopeType,
-        departmentId: formScopeType === 'DEPARTMENT' ? formDepartmentId : null,
+        departmentId: isHOD && hodDeptId ? hodDeptId : (formScopeType === 'DEPARTMENT' ? formDepartmentId : null),
         programmeId: formScopeType === 'PROGRAMME' ? formProgrammeId : null,
         batchId: formScopeType === 'BATCH' ? formBatchId : null,
         courseGroupId: formScopeType === 'COURSE_GROUP' ? formCourseGroupId : null,
         studentCoverage: formStudentCoverage,
         selectedStudentIds: formStudentCoverage === 'SELECTED_ONLY' ? formSelectedStudentIds : [],
+        dutyCertificateRef: formDutyCertificateRef.trim() || undefined,
+        forwardedByHodId: isHOD ? user?.id : undefined,
+        forwardedByHodName: isHOD ? user?.name : undefined,
+        forwardedAt: isHOD ? new Date().toISOString() : undefined,
         reason: formReason.trim(),
         createdBy: user?.id || 'admin',
         createdByName: user?.name,
         createdByRole: activeRole,
-        status: 'APPLIED'
+        status: targetStatus
       });
 
       if (res.success) {
-        setFeedbackMessage({
-          type: 'success',
-          text: `Special Attendance order "${formTitle}" recorded successfully for ${eligibleStudentsForForm.length} students across ${targetPeriodsCount} period(s).`
-        });
+        if (!isPrincipal) {
+          setFeedbackMessage({
+            type: 'success',
+            text: `Special Attendance order "${formTitle}" recorded and successfully forwarded to Principal for statutory approval.`
+          });
+        } else {
+          setFeedbackMessage({
+            type: 'success',
+            text: `Special Attendance order "${formTitle}" sanctioned and consolidated into student attendance records for ${eligibleStudentsForForm.length} students across ${targetPeriodsCount} period(s).`
+          });
+        }
         // Reset form
         setFormTitle('');
         setFormDescription('');
         setFormReason('');
+        setFormDutyCertificateRef('');
         setFormSelectedStudentIds([]);
         setActiveTab('EVENTS');
       } else {
@@ -417,6 +609,14 @@ export const SpecialAttendanceView: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowSqlModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition-all border border-slate-200 cursor-pointer"
+              title="View Supabase PostgreSQL Schema Code"
+            >
+              <Database className="w-3.5 h-3.5 text-blue-600" />
+              <span className="hidden sm:inline">Database</span> SQL Code
+            </button>
             {isAuthorized && (
               <button
                 onClick={() => setActiveTab(activeTab === 'CREATE' ? 'EVENTS' : 'CREATE')}
@@ -447,10 +647,30 @@ export const SpecialAttendanceView: React.FC = () => {
         )}
 
         {/* View Tabs */}
-        <div className="flex border-b border-slate-200 mt-6 -mb-6">
+        <div className="flex border-b border-slate-200 mt-6 -mb-6 overflow-x-auto no-scrollbar">
+          {/* Principal Approval Queue Tab */}
+          {(isPrincipal || isHOD) && (
+            <button
+              onClick={() => setActiveTab('PRINCIPAL_APPROVALS')}
+              className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold border-b-2 whitespace-nowrap transition-colors ${
+                activeTab === 'PRINCIPAL_APPROVALS'
+                  ? 'border-amber-600 text-amber-700'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-amber-600" />
+              {isPrincipal ? 'Principal Approval Queue' : 'Forwarded Approvals'}
+              {pendingPrincipalEvents.length > 0 && (
+                <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-amber-500 text-white font-bold animate-pulse">
+                  {pendingPrincipalEvents.length} Pending
+                </span>
+              )}
+            </button>
+          )}
+
           <button
             onClick={() => setActiveTab('EVENTS')}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${
+            className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold border-b-2 whitespace-nowrap transition-colors ${
               activeTab === 'EVENTS'
                 ? 'border-slate-900 text-slate-900'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -466,27 +686,27 @@ export const SpecialAttendanceView: React.FC = () => {
           {isAuthorized && (
             <button
               onClick={() => setActiveTab('CREATE')}
-              className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${
+              className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold border-b-2 whitespace-nowrap transition-colors ${
                 activeTab === 'CREATE'
                   ? 'border-slate-900 text-slate-900'
                   : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
-              <PlusCircle className="w-4 h-4" />
-              Grant Attendance Order
+              <PlusCircle className="w-4 h-4 text-emerald-600" />
+              {isHOD ? 'Enter Duty Attendance (Forward to Principal)' : 'Sanction Attendance Order'}
             </button>
           )}
 
           <button
             onClick={() => setActiveTab('STUDENT_RECORDS')}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${
+            className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold border-b-2 whitespace-nowrap transition-colors ${
               activeTab === 'STUDENT_RECORDS'
                 ? 'border-slate-900 text-slate-900'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
             <Users className="w-4 h-4" />
-            Student Record Logs
+            Student Duty Log
             <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-slate-100 text-slate-700 font-bold">
               {specialAttendanceRecords.length}
             </span>
@@ -517,6 +737,322 @@ export const SpecialAttendanceView: React.FC = () => {
           >
             <X className="w-4 h-4" />
           </button>
+        </div>
+      )}
+
+      {/* TAB 0: PRINCIPAL APPROVAL QUEUE */}
+      {activeTab === 'PRINCIPAL_APPROVALS' && (isPrincipal || isHOD) && (
+        <div className="space-y-6">
+          {/* Header Banner */}
+          <div className="bg-gradient-to-r from-amber-950 via-slate-900 to-amber-900 text-white rounded-2xl p-6 shadow-sm border border-amber-900/30">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-6 h-6 text-amber-400" />
+                  <h2 className="text-lg font-bold">
+                    {isPrincipal ? 'Principal Sanction & Consolidation Queue' : 'Forwarded Duty Attendance Submissions'}
+                  </h2>
+                </div>
+                <p className="text-xs text-amber-200 max-w-2xl leading-relaxed">
+                  Students attending College Union programmes, student political wing conventions, university youth festivals, or sports meets are marked Absent in regular periods. Head of Departments verify certificates and forward them here for statutory sanction and automatic consolidation into official student attendance registers.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="px-3 py-2 rounded-xl bg-white/10 backdrop-blur-xs border border-white/10 text-center min-w-[90px]">
+                  <div className="text-xl font-bold text-amber-300">{pendingPrincipalEvents.length}</div>
+                  <div className="text-[10px] text-amber-200 font-semibold uppercase">Pending Action</div>
+                </div>
+                <div className="px-3 py-2 rounded-xl bg-white/10 backdrop-blur-xs border border-white/10 text-center min-w-[90px]">
+                  <div className="text-xl font-bold text-emerald-300">
+                    {specialAttendanceEvents.filter(e => e.status === 'APPROVED' || e.status === 'APPLIED').length}
+                  </div>
+                  <div className="text-[10px] text-emerald-200 font-semibold uppercase">Sanctioned</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Principal Filter & Bulk Control Bar */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-3">
+              {isPrincipal && (
+                <div className="flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-slate-500 shrink-0" />
+                  <label htmlFor="principal-dept-filter" className="text-xs font-bold text-slate-700">Filter Department:</label>
+                  <select
+                    id="principal-dept-filter"
+                    value={filterApprovalDept}
+                    onChange={e => {
+                      setFilterApprovalDept(e.target.value);
+                      setSelectedApprovalIds([]);
+                    }}
+                    className="text-xs px-3 py-2 border border-slate-300 rounded-xl bg-white font-medium text-slate-800 focus:ring-2 focus:ring-slate-900"
+                  >
+                    <option value="ALL">All Departments ({allPendingEvents.length} pending)</option>
+                    {departments.map(d => {
+                      const count = allPendingEvents.filter(e => e.departmentId === d.id).length;
+                      return (
+                        <option key={d.id} value={d.id}>
+                          {d.name} ({count} pending)
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
+
+              {isHOD && hodDept && (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-blue-50 border border-blue-200 text-xs font-bold text-blue-900">
+                  <Building2 className="w-4 h-4 text-blue-600" />
+                  <span>{hodDept.name} (HOD Scoped)</span>
+                </div>
+              )}
+
+              {/* Status counter pill */}
+              <div className="text-xs text-slate-500 font-semibold px-2.5 py-1 bg-slate-100 rounded-lg">
+                Showing <strong className="text-slate-900">{pendingPrincipalEvents.length}</strong> submission(s)
+              </div>
+            </div>
+
+            {/* Principal Bulk Action Buttons */}
+            {isPrincipal && pendingPrincipalEvents.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Select All Toggle */}
+                <button
+                  type="button"
+                  onClick={() => handleToggleSelectAllApprovals(pendingPrincipalEvents)}
+                  className="px-3 py-2 text-xs font-bold border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl transition-all cursor-pointer"
+                >
+                  {pendingPrincipalEvents.length > 0 &&
+                  pendingPrincipalEvents.every(e => selectedApprovalIds.includes(e.id))
+                    ? 'Deselect All'
+                    : `Select All (${pendingPrincipalEvents.length})`}
+                </button>
+
+                {/* Approve Selected */}
+                {selectedApprovalIds.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={isApprovingAll}
+                    onClick={() => {
+                      const targets = pendingPrincipalEvents.filter(e => selectedApprovalIds.includes(e.id));
+                      handleApproveAllPending(targets);
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    {isApprovingAll ? 'Approving Selected...' : `Approve Selected (${selectedApprovalIds.length})`}
+                  </button>
+                )}
+
+                {/* Approve All in Queue / Filter */}
+                <button
+                  type="button"
+                  disabled={isApprovingAll}
+                  onClick={() => handleApproveAllPending(pendingPrincipalEvents)}
+                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                >
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  {isApprovingAll ? 'Processing All...' : `Approve All (${pendingPrincipalEvents.length})`}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Pending Events List */}
+          {pendingPrincipalEvents.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-xs space-y-3">
+              <div className="w-16 h-16 rounded-full bg-emerald-50 text-emerald-600 mx-auto flex items-center justify-center">
+                <CheckCircle2 className="w-8 h-8" />
+              </div>
+              <h3 className="text-base font-bold text-slate-900">All Duty Attendance Submissions Processed</h3>
+              <p className="text-xs text-slate-500 max-w-md mx-auto">
+                {filterApprovalDept !== 'ALL'
+                  ? 'There are no pending requests awaiting Principal sanction for this department.'
+                  : 'There are currently no pending special attendance requests awaiting Principal action. New requests forwarded by HODs will appear here immediately for sanction.'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {pendingPrincipalEvents.map(event => {
+                const eventRecords = specialAttendanceRecords.filter(r => r.eventId === event.id);
+                const dept = departments.find(d => d.id === event.departmentId);
+                const affectedStudentIds = event.selectedStudentIds && event.selectedStudentIds.length > 0
+                  ? event.selectedStudentIds
+                  : Array.from(new Set(eventRecords.map(r => r.studentId)));
+                const affectedStudents = students.filter(s => affectedStudentIds.includes(s.id));
+
+                return (
+                  <div
+                    key={event.id}
+                    className="bg-white rounded-2xl border-2 border-amber-200 p-5 sm:p-6 shadow-xs hover:border-amber-300 transition-all space-y-4"
+                  >
+                    <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {isPrincipal && (
+                            <input
+                              type="checkbox"
+                              checked={selectedApprovalIds.includes(event.id)}
+                              onChange={() => handleToggleSelectApproval(event.id)}
+                              className="w-4 h-4 rounded text-slate-900 border-slate-300 focus:ring-slate-900 cursor-pointer mr-1"
+                              title="Select for batch approval"
+                            />
+                          )}
+                          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                            Awaiting Principal Approval
+                          </span>
+                          <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${categoryLabels[event.eventType]?.color || 'bg-slate-100 text-slate-700'}`}>
+                            {categoryLabels[event.eventType]?.label || event.eventType}
+                          </span>
+                          <span className="text-xs font-semibold text-slate-500 flex items-center gap-1">
+                            <Calendar className="w-3.5 h-3.5" /> {event.eventDate}
+                          </span>
+                          <span className="text-xs font-semibold text-slate-500 flex items-center gap-1">
+                            <Clock className="w-3.5 h-3.5" /> {event.isFullDay ? 'Full Day (All Periods)' : `${event.periodIds.length} Period(s)`}
+                          </span>
+                        </div>
+
+                        <h3 className="text-base sm:text-lg font-bold text-slate-900">
+                          {event.title}
+                        </h3>
+
+                        {event.description && (
+                          <p className="text-xs text-slate-600">{event.description}</p>
+                        )}
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {isPrincipal ? (
+                          <>
+                            <button
+                              onClick={() => {
+                                setApprovingEvent(event);
+                                setPrincipalOrderNumber(`NSS/PRIN/ATT/${new Date().getFullYear()}/${Math.floor(100 + Math.random() * 900)}`);
+                                setPrincipalOrderRemarks('Sanctioned under Calicut University Ordinance Rule 14. Duty attendance consolidated into student attendance register.');
+                              }}
+                              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                            >
+                              <ShieldCheck className="w-4 h-4" />
+                              Approve & Consolidate
+                            </button>
+                            <button
+                              onClick={() => {
+                                setRejectingEvent(event);
+                                setRejectReason('');
+                              }}
+                              className="px-3.5 py-2 border border-rose-300 hover:bg-rose-50 text-rose-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                            >
+                              <X className="w-4 h-4" />
+                              Return to HOD
+                            </button>
+                          </>
+                        ) : (
+                          <span className="text-xs text-amber-700 font-bold bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-amber-600" />
+                            Forwarded to Principal
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Duty Certificate and HOD Forwarding Metadata */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 p-3.5 rounded-xl bg-amber-50/50 border border-amber-200/70 text-xs">
+                      <div>
+                        <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block">Forwarded By</span>
+                        <span className="font-bold text-slate-900 mt-0.5 block">
+                          {event.forwardedByHodName || event.createdByName || 'Head of Department'}
+                        </span>
+                        <span className="text-[11px] text-slate-500">{dept?.name || 'Department'}</span>
+                      </div>
+
+                      <div>
+                        <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block">Duty Certificate Ref</span>
+                        <span className="font-mono font-bold text-emerald-800 mt-0.5 block flex items-center gap-1">
+                          <Stamp className="w-3.5 h-3.5 text-emerald-600" />
+                          {event.dutyCertificateRef || 'Verified by Department HOD'}
+                        </span>
+                        <span className="text-[11px] text-slate-500">Official student duty submission</span>
+                      </div>
+
+                      <div>
+                        <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block">Forwarded Date & Time</span>
+                        <span className="font-semibold text-slate-800 mt-0.5 block">
+                          {event.forwardedAt ? new Date(event.forwardedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recently'}
+                        </span>
+                        <span className="text-[11px] text-slate-500">Submission Timestamp</span>
+                      </div>
+                    </div>
+
+                    {/* Official Reason */}
+                    <div className="text-xs text-slate-700 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                      <span className="font-bold text-slate-900">Justification / Activity Details: </span>
+                      {event.reason}
+                    </div>
+
+                    {/* Affected Students List with Teacher Absence status and Before/After Impact */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                          <Users className="w-3.5 h-3.5 text-slate-500" />
+                          Nominated Students ({affectedStudents.length})
+                        </span>
+                        <span className="text-slate-500 text-[11px]">
+                          Teacher roll call recorded as ABSENT • Principal approval consolidates as authorized duty
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                        {affectedStudents.map(student => {
+                          const summary = getStudentAttendanceSummary(student.id);
+                          const prog = programmes.find(p => p.id === student.programmeId);
+                          return (
+                            <div
+                              key={student.id}
+                              className="p-3 rounded-xl border border-slate-200 bg-white hover:border-amber-300 transition-colors flex items-center justify-between gap-3"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-bold text-xs text-slate-900 truncate">
+                                    {student.fullName}
+                                  </span>
+                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-bold">
+                                    Roll {student.rollNumber}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-500 truncate mt-0.5">
+                                  {student.universityRegisterNumber} • {prog?.title || 'Student'}
+                                </div>
+                                <div className="mt-1 flex items-center gap-1.5">
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                    Teacher marked: ABSENT
+                                  </span>
+                                  <CornerDownRight className="w-3 h-3 text-slate-400" />
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    Consolidates +{event.isFullDay ? timetablePeriods.length : event.periodIds.length} Periods
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="text-right shrink-0">
+                                <div className="text-[10px] font-semibold text-slate-400 uppercase">Regular %</div>
+                                <div className="text-xs font-bold text-slate-700">{summary.regularPercentage}%</div>
+                                <div className="text-[10px] font-bold text-emerald-600 mt-0.5">
+                                  Consolidated: {summary.consolidatedPercentage}%
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -768,11 +1304,7 @@ export const SpecialAttendanceView: React.FC = () => {
 
                         {isAuthorized && event.status === 'APPLIED' && (
                           <button
-                            onClick={async () => {
-                              if (confirm(`Cancel special attendance for "${event.title}"?`)) {
-                                await updateSpecialAttendanceStatus(event.id, 'CANCELLED');
-                              }
-                            }}
+                            onClick={() => setEventToCancel(event)}
                             className="inline-flex items-center gap-1 px-3 py-1.5 border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-lg text-xs font-semibold transition-colors"
                           >
                             Cancel
@@ -781,11 +1313,7 @@ export const SpecialAttendanceView: React.FC = () => {
 
                         {isAuthorized && (activeRole === 'SUPER_ADMIN' || activeRole === 'PRINCIPAL') && (
                           <button
-                            onClick={async () => {
-                              if (confirm(`Permanently delete special attendance event "${event.title}" and its records?`)) {
-                                await deleteSpecialAttendanceEvent(event.id);
-                              }
-                            }}
+                            onClick={() => setEventToDelete(event)}
                             className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
                             title="Delete Event"
                           >
@@ -808,12 +1336,30 @@ export const SpecialAttendanceView: React.FC = () => {
           <div className="border-b border-slate-100 pb-4 mb-6">
             <h2 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
               <PlusCircle className="w-5 h-5 text-emerald-600" />
-              Grant Special / Institutional Attendance
+              {isHOD ? 'Enter Duty Attendance (Forward to Principal for Approval)' : 'Sanction Special / Institutional Attendance'}
             </h2>
             <p className="text-xs text-slate-500 mt-1">
-              Create an auditable institutional order. Normal teacher attendance records remain intact and are merged seamlessly with this special concession.
+              {isHOD
+                ? 'Enter student duty attendance for College Union programmes, political party union events, sports, or cultural activities where students were marked absent. Submitting will forward this request to the Principal for statutory sanction and automatic attendance consolidation.'
+                : 'Create an official institutional attendance order. Once approved, student absences are consolidated into their semester attendance register.'}
             </p>
           </div>
+
+          {/* Workflow Alert Box for HOD */}
+          {isHOD && (
+            <div className="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-3 text-xs text-amber-900">
+              <Info className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-bold">Workflow Notice for Head of Department:</p>
+                <p>
+                  When a student goes to a College Union or political party union programme, regular subject teachers mark them as <strong>ABSENT</strong> during normal roll call.
+                </p>
+                <p>
+                  Entering the student attendance and duty certificate number below will forward this request to the <strong>Principal Panel</strong>. When the Principal approves, it is <strong>consolidated into the student attendance register</strong> and also displayed separately as official institutional duty attendance.
+                </p>
+              </div>
+            </div>
+          )}
 
           <form onSubmit={handleSubmitEvent} className="space-y-6">
             {/* Title and Event Type */}
@@ -825,7 +1371,7 @@ export const SpecialAttendanceView: React.FC = () => {
                 <input
                   type="text"
                   required
-                  placeholder="e.g., University Youth Festival Duty, College Arts Day, District Hartal..."
+                  placeholder="e.g., Calicut University College Union Convention, Parliamentary Debate, State Youth Fest..."
                   value={formTitle}
                   onChange={e => setFormTitle(e.target.value)}
                   className="w-full px-3.5 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-slate-900"
@@ -857,20 +1403,21 @@ export const SpecialAttendanceView: React.FC = () => {
                   onChange={e => setFormEventType(e.target.value as SpecialAttendanceEventType)}
                   className="w-full px-3.5 py-2.5 border border-slate-200 rounded-lg text-sm bg-white text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-slate-900 font-medium"
                 >
+                  <option value="UNION_PROGRAMME">College Union / University Association Programme</option>
+                  <option value="POLITICAL_UNION">Political Party / Student Union Programme</option>
                   <option value="COLLEGE_PROGRAMME">Official College Event (Arts, Sports, Convocation)</option>
-                  <option value="UNION_PROGRAMME">College Union / Association Programme</option>
-                  <option value="STRIKE">Strike / Hartal / External Disruption</option>
-                  <option value="OFFICIAL_EVENT">Institutional Order (Principal's Sanction)</option>
-                  <option value="DEPARTMENT_PROGRAMME">Department Programme / Workshop</option>
-                  <option value="SPORTS">Sports Tournament Representation Duty</option>
+                  <option value="SPORTS">Sports Tournament Duty</option>
                   <option value="NSS">NSS Camp / Community Outreach Duty</option>
                   <option value="NCC">NCC Parade / Combined Camp Duty</option>
                   <option value="CULTURAL">Youth Festival / Cultural Competition</option>
                   <option value="SEMINAR">Academic Conference / Presentation</option>
+                  <option value="OFFICIAL_EVENT">Institutional Order (Principal Sanction)</option>
+                  <option value="STRIKE">Strike / Hartal / External Disruption</option>
+                  <option value="DEPARTMENT_PROGRAMME">Department Programme / Workshop</option>
                   <option value="EXAM_DUTY">University Examination Duty</option>
                   <option value="OTHER">Other Exceptional Circumstance</option>
                 </select>
-                <p className="text-[11px] text-slate-500">{categoryLabels[formEventType].desc}</p>
+                <p className="text-[11px] text-slate-500">{categoryLabels[formEventType]?.desc}</p>
               </div>
 
               <div className="space-y-1.5">
@@ -879,12 +1426,32 @@ export const SpecialAttendanceView: React.FC = () => {
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g., Circular Ref # NSS/2026/SP-09 by Principal"
+                  placeholder="e.g., Union Circular Ref # NSS/CU/2026/042 or Event Memo"
                   value={formDescription}
                   onChange={e => setFormDescription(e.target.value)}
                   className="w-full px-3.5 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-slate-900"
                 />
               </div>
+            </div>
+
+            {/* Duty Certificate / Union Letter Ref No */}
+            <div className="p-4 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2">
+              <div className="flex items-center gap-2">
+                <Stamp className="w-4 h-4 text-emerald-700" />
+                <label className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
+                  Duty Certificate / Union Letter Reference No.
+                </label>
+              </div>
+              <input
+                type="text"
+                placeholder="e.g. Certificate No. NSS/CU/2026/042 / College Union Memo Ref"
+                value={formDutyCertificateRef}
+                onChange={e => setFormDutyCertificateRef(e.target.value)}
+                className="w-full px-3.5 py-2.5 border border-emerald-300 bg-white rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-emerald-600 font-mono"
+              />
+              <p className="text-[11px] text-emerald-800">
+                Official duty certificate or College Union memo presented by the student to the HOD. This reference will be recorded in the Principal Sanction register and official student profile.
+              </p>
             </div>
 
             {/* Period Selection */}
@@ -1047,38 +1614,51 @@ export const SpecialAttendanceView: React.FC = () => {
               {formScopeType === 'DEPARTMENT' && (
                 <div className="space-y-1.5">
                   <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    Select Department
+                    Department Scope
                   </label>
-                  <select
-                    value={formDepartmentId}
-                    onChange={e => setFormDepartmentId(e.target.value)}
-                    disabled={isHOD && !!hodDeptId}
-                    className="w-full px-3.5 py-2.5 border border-slate-200 rounded-lg text-sm bg-white text-slate-800 disabled:bg-slate-100"
-                  >
-                    {departments.map(dept => (
-                      <option key={dept.id} value={dept.id}>
-                        {dept.name} ({dept.code})
-                      </option>
-                    ))}
-                  </select>
+                  {isHOD && hodDept ? (
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between text-xs font-semibold text-blue-900">
+                      <div className="flex items-center gap-2">
+                        <Building2 className="w-4 h-4 text-blue-600" />
+                        <span>{hodDept.name} ({hodDept.code})</span>
+                      </div>
+                      <span className="text-[11px] font-bold text-blue-700 uppercase bg-blue-100 px-2 py-0.5 rounded-md">
+                        HOD Locked
+                      </span>
+                    </div>
+                  ) : (
+                    <select
+                      value={formDepartmentId}
+                      onChange={e => setFormDepartmentId(e.target.value)}
+                      className="w-full px-3.5 py-2.5 border border-slate-200 rounded-lg text-sm bg-white text-slate-800"
+                    >
+                      {departments.map(dept => (
+                        <option key={dept.id} value={dept.id}>
+                          {dept.name} ({dept.code})
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               )}
 
               {formScopeType === 'PROGRAMME' && (
                 <div className="space-y-1.5">
                   <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    Select Programme
+                    Select Programme {isHOD && hodDept && `(${hodDept.code})`}
                   </label>
                   <select
                     value={formProgrammeId}
                     onChange={e => setFormProgrammeId(e.target.value)}
                     className="w-full px-3.5 py-2.5 border border-slate-200 rounded-lg text-sm bg-white text-slate-800"
                   >
-                    {programmes.map(prog => (
-                      <option key={prog.id} value={prog.id}>
-                        {prog.title} ({prog.code})
-                      </option>
-                    ))}
+                    {programmes
+                      .filter(prog => !isHOD || !hodDeptId || prog.departmentId === hodDeptId)
+                      .map(prog => (
+                        <option key={prog.id} value={prog.id}>
+                          {prog.title} ({prog.code})
+                        </option>
+                      ))}
                   </select>
                 </div>
               )}
@@ -1093,11 +1673,13 @@ export const SpecialAttendanceView: React.FC = () => {
                     onChange={e => setFormBatchId(e.target.value)}
                     className="w-full px-3.5 py-2.5 border border-slate-200 rounded-lg text-sm bg-white text-slate-800"
                   >
-                    {admissionBatches.map(batch => (
-                      <option key={batch.id} value={batch.id}>
-                        {batch.batchName} ({batch.academicYearId})
-                      </option>
-                    ))}
+                    {admissionBatches
+                      .filter(batch => !isHOD || !hodDeptId || batch.departmentId === hodDeptId || !batch.departmentId)
+                      .map(batch => (
+                        <option key={batch.id} value={batch.id}>
+                          {batch.batchName} ({batch.academicYearId})
+                        </option>
+                      ))}
                   </select>
                 </div>
               )}
@@ -1156,6 +1738,9 @@ export const SpecialAttendanceView: React.FC = () => {
                   <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-lg bg-white divide-y divide-slate-100">
                     {students
                       .filter(s => {
+                        if (isHOD && hodDeptId && s.homeDepartmentId !== hodDeptId && s.departmentId !== hodDeptId) {
+                          return false;
+                        }
                         if (!studentPickerSearch.trim()) return true;
                         const q = studentPickerSearch.toLowerCase();
                         return (
@@ -1489,6 +2074,163 @@ export const SpecialAttendanceView: React.FC = () => {
           </div>
         </Modal>
       )}
+
+      {/* SQL Migration Code Modal */}
+      {showSqlModal && (
+        <Modal
+          isOpen={showSqlModal}
+          onClose={() => setShowSqlModal(false)}
+          title="Database SQL Code: Special & Union Duty Attendance"
+          maxWidth="max-w-3xl"
+        >
+          <div className="space-y-4">
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 flex items-start gap-2">
+              <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">PostgreSQL / Supabase Migration</p>
+                <p>
+                  Execute this SQL in your Supabase SQL Editor to support HOD forwarding, duty certificates, Principal sanctions, and conflict overrides when students attend College Union or political party programmes.
+                </p>
+              </div>
+            </div>
+
+            <div className="relative">
+              <pre className="p-4 bg-slate-900 text-slate-100 rounded-xl text-xs font-mono overflow-x-auto max-h-[380px] leading-relaxed border border-slate-800">
+                {`-- 1. Extend special_attendance_events with HOD forwarding & Principal sanction
+ALTER TABLE special_attendance_events 
+  ADD COLUMN IF NOT EXISTS duty_certificate_ref VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS forwarded_by_hod_id UUID REFERENCES faculty(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS forwarded_by_hod_name VARCHAR(150),
+  ADD COLUMN IF NOT EXISTS forwarded_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS principal_remarks TEXT,
+  ADD COLUMN IF NOT EXISTS principal_action_at TIMESTAMPTZ;
+
+-- 2. Extend special_attendance_records to track teacher's initial absence
+ALTER TABLE special_attendance_records 
+  ADD COLUMN IF NOT EXISTS original_teacher_status VARCHAR(50) DEFAULT 'ABSENT',
+  ADD COLUMN IF NOT EXISTS normal_session_conflict_status VARCHAR(100) DEFAULT 'OVERRIDDEN',
+  ADD COLUMN IF NOT EXISTS attendance_source VARCHAR(50) DEFAULT 'SPECIAL',
+  ADD COLUMN IF NOT EXISTS remarks TEXT;
+
+-- 3. High performance indexes for Principal Queue & Student Rollup
+CREATE INDEX IF NOT EXISTS idx_spec_att_status ON special_attendance_events(status);
+CREATE INDEX IF NOT EXISTS idx_spec_att_event_type ON special_attendance_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_spec_rec_student_event ON special_attendance_records(student_id, event_id);
+
+-- 4. Notify PostgREST to reload schema
+NOTIFY pgrst, 'reload schema';`}
+              </pre>
+
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(`-- 1. Extend special_attendance_events with HOD forwarding & Principal sanction
+ALTER TABLE special_attendance_events 
+  ADD COLUMN IF NOT EXISTS duty_certificate_ref VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS forwarded_by_hod_id UUID REFERENCES faculty(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS forwarded_by_hod_name VARCHAR(150),
+  ADD COLUMN IF NOT EXISTS forwarded_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS principal_remarks TEXT,
+  ADD COLUMN IF NOT EXISTS principal_action_at TIMESTAMPTZ;
+
+-- 2. Extend special_attendance_records to track teacher's initial absence
+ALTER TABLE special_attendance_records 
+  ADD COLUMN IF NOT EXISTS original_teacher_status VARCHAR(50) DEFAULT 'ABSENT',
+  ADD COLUMN IF NOT EXISTS normal_session_conflict_status VARCHAR(100) DEFAULT 'OVERRIDDEN',
+  ADD COLUMN IF NOT EXISTS attendance_source VARCHAR(50) DEFAULT 'SPECIAL',
+  ADD COLUMN IF NOT EXISTS remarks TEXT;
+
+-- 3. High performance indexes for Principal Queue & Student Rollup
+CREATE INDEX IF NOT EXISTS idx_spec_att_status ON special_attendance_events(status);
+CREATE INDEX IF NOT EXISTS idx_spec_att_event_type ON special_attendance_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_spec_rec_student_event ON special_attendance_records(student_id, event_id);
+
+-- 4. Notify PostgREST to reload schema
+NOTIFY pgrst, 'reload schema';`);
+                  setCopiedSql(true);
+                  setTimeout(() => setCopiedSql(false), 2000);
+                }}
+                className="absolute top-3 right-3 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-700 cursor-pointer"
+              >
+                {copiedSql ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" /> Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5 text-slate-300" /> Copy SQL
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setShowSqlModal(false)}
+                className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Confirm Delete Event Modal */}
+      <ConfirmDialog
+        isOpen={!!eventToDelete}
+        onClose={() => setEventToDelete(null)}
+        onConfirm={async () => {
+          if (!eventToDelete) return;
+          setIsDeletingEvent(true);
+          try {
+            await deleteSpecialAttendanceEvent(eventToDelete.id);
+          } finally {
+            setIsDeletingEvent(false);
+            setEventToDelete(null);
+          }
+        }}
+        isLoading={isDeletingEvent}
+        title="Delete Special Attendance Event"
+        message={
+          <div>
+            <p>
+              Are you sure you want to permanently delete event{' '}
+              <strong className="text-slate-900">{eventToDelete?.title}</strong>?
+            </p>
+            <p className="mt-2 text-rose-600 font-medium">
+              This event and all its credited duty attendance student records will be removed from the system.
+            </p>
+          </div>
+        }
+        confirmLabel="Yes, Delete Event"
+        variant="danger"
+      />
+
+      {/* Confirm Cancel Event Modal */}
+      <ConfirmDialog
+        isOpen={!!eventToCancel}
+        onClose={() => setEventToCancel(null)}
+        onConfirm={async () => {
+          if (!eventToCancel) return;
+          setIsDeletingEvent(true);
+          try {
+            await updateSpecialAttendanceStatus(eventToCancel.id, 'CANCELLED');
+          } finally {
+            setIsDeletingEvent(false);
+            setEventToCancel(null);
+          }
+        }}
+        isLoading={isDeletingEvent}
+        title="Cancel Special Attendance"
+        message={
+          <p>
+            Are you sure you want to cancel the special attendance request for{' '}
+            <strong className="text-slate-900">{eventToCancel?.title}</strong>?
+          </p>
+        }
+        confirmLabel="Yes, Cancel Event"
+        variant="warning"
+      />
     </div>
   );
 };

@@ -110,7 +110,7 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
   const [universityRegNo, setUniversityRegNo] = useState('');
   const [email, setEmail] = useState('');
   const [homeDepartmentId, setHomeDepartmentId] = useState(
-    activeRole === 'HOD' && user?.departmentId ? user.departmentId : departments[0]?.id || ''
+    activeRole === 'HOD' && user?.departmentId ? user.departmentId : departments[0]?.id || 'dept-cs'
   );
   const [currentSemester, setCurrentSemester] = useState<number>(1);
   const [yearOfStudy, setYearOfStudy] = useState<number>(1);
@@ -120,7 +120,7 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
   // Secondary form fields
   const [admissionNumber, setAdmissionNumber] = useState('');
   const [rollNumber, setRollNumber] = useState('');
-  const [programmeId, setProgrammeId] = useState(programmes[0]?.id || '');
+  const [programmeId, setProgrammeId] = useState(programmes[0]?.id || 'prog-bsc-cs');
   const [admissionBatch, setAdmissionBatch] = useState('2026-2030');
   const [bloodGroup, setBloodGroup] = useState('');
   const [gender, setGender] = useState('');
@@ -208,10 +208,10 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
     setEmail('');
     setAdmissionNumber('');
     setRollNumber('');
-    setHomeDepartmentId(
-      activeRole === 'HOD' && user?.departmentId ? user.departmentId : departments[0]?.id || ''
-    );
-    setProgrammeId(programmes[0]?.id || '');
+    const initialDeptId = activeRole === 'HOD' && user?.departmentId ? user.departmentId : (departments[0]?.id || 'dept-cs');
+    const matchedProg = programmes.find(p => p.departmentId === initialDeptId) || programmes[0];
+    setHomeDepartmentId(initialDeptId);
+    setProgrammeId(matchedProg?.id || 'prog-bsc-cs');
     setAdmissionBatch('2026-2030');
     setCurrentSemester(1);
     setYearOfStudy(1);
@@ -241,8 +241,10 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
     setEmail(s.email || '');
     setAdmissionNumber(s.admissionNumber || '');
     setRollNumber(s.rollNumber || '');
-    setHomeDepartmentId(s.homeDepartmentId || departments[0]?.id || '');
-    setProgrammeId(s.programmeId || programmes[0]?.id || '');
+    const sDeptId = s.homeDepartmentId || (departments[0]?.id || 'dept-cs');
+    const sProgId = s.programmeId || programmes.find(p => p.departmentId === sDeptId)?.id || programmes[0]?.id || 'prog-bsc-cs';
+    setHomeDepartmentId(sDeptId);
+    setProgrammeId(sProgId);
     setAdmissionBatch(s.admissionBatch || '2026-2030');
     setCurrentSemester(s.currentSemester || 1);
     setYearOfStudy(s.yearOfStudy || Math.ceil((s.currentSemester || 1) / 2));
@@ -339,8 +341,8 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
       dateOfBirth: formatDobForDisplay(dateOfBirth) || dateOfBirth,
       universityRegisterNumber: universityRegNo.trim().toUpperCase(),
       email: email.trim().toLowerCase(),
-      homeDepartmentId,
-      programmeId,
+      homeDepartmentId: homeDepartmentId || departments[0]?.id || 'dept-cs',
+      programmeId: programmeId || programmes[0]?.id || 'prog-bsc-cs',
       currentSemester: Number(currentSemester),
       yearOfStudy: Number(yearOfStudy),
       username: finalUsername,
@@ -685,9 +687,11 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
 
                       {/* Department & Programme */}
                       <td className="py-3 px-4">
-                        <p className="font-semibold text-slate-800 truncate">{prog?.name || dept?.name}</p>
+                        <p className="font-semibold text-slate-800 truncate">
+                          {prog?.name || dept?.name || 'Academic Programme'}
+                        </p>
                         <span className="text-[10px] text-blue-700 font-bold bg-blue-50 px-1.5 py-0.5 rounded">
-                          {dept?.code || 'DEPT'}
+                          {dept?.code || prog?.code || 'COMMERCE'}
                         </span>
                       </td>
 
@@ -899,17 +903,24 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
                   <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
                     Department <span className="text-rose-500">*</span>
                   </label>
-                  <select
-                    value={homeDepartmentId}
-                    onChange={e => setHomeDepartmentId(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm bg-white font-medium"
-                  >
-                    {departments.map(d => (
-                      <option key={d.id} value={d.id}>
-                        {d.name} ({d.code})
-                      </option>
-                    ))}
-                  </select>
+                  {activeRole === 'HOD' && hodDeptId ? (
+                    <div className="px-3.5 py-2.5 rounded-xl border border-blue-200 bg-blue-50 text-blue-900 text-sm font-semibold flex items-center justify-between">
+                      <span>{departments.find(d => d.id === hodDeptId)?.name || 'Department'}</span>
+                      <span className="text-[10px] bg-blue-200 text-blue-800 px-2 py-0.5 rounded-full uppercase">HOD Locked</span>
+                    </div>
+                  ) : (
+                    <select
+                      value={homeDepartmentId}
+                      onChange={e => setHomeDepartmentId(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm bg-white font-medium"
+                    >
+                      {departments.map(d => (
+                        <option key={d.id} value={d.id}>
+                          {d.name} ({d.code})
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
 
                 {/* Major Programme */}
@@ -918,15 +929,19 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
                     Degree Programme <span className="text-rose-500">*</span>
                   </label>
                   <select
-                    value={programmeId}
+                    value={programmeId || programmes[0]?.id || 'prog-bsc-cs'}
                     onChange={e => setProgrammeId(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm bg-white font-medium"
                   >
-                    {programmes.map(p => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
+                    {programmes.length === 0 ? (
+                      <option value="prog-bsc-cs">BSc Computer Science (UG)</option>
+                    ) : (
+                      programmes.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
               </div>

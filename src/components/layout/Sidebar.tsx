@@ -27,7 +27,6 @@ import {
   FileCheck,
   Download,
   Bus,
-  ShieldAlert,
   X
 } from 'lucide-react';
 
@@ -224,11 +223,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Bus,
           badge: (activeRole === 'HOD' || activeRole === 'PRINCIPAL') ? 'New' : undefined,
           badgeColor: 'bg-amber-500'
-        },
-        {
-          id: 'complaints',
-          label: 'Grievances',
-          icon: ShieldAlert
         },
         { id: 'resources', label: 'Resources', icon: Download },
         { id: 'department-hub', label: 'Department Hub', icon: Building2 }

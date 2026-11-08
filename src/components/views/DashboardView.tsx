@@ -87,7 +87,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
     dailyScheduleOverrides,
     getDailyScheduledClasses,
     getOrCreateSessionForTimetableEntry,
-    cancelScheduledClass
+    cancelScheduledClass,
+    specialAttendanceEvents,
+    updateSpecialAttendanceStatus
   } = useCollegeData();
 
   // Modals state
@@ -851,7 +853,119 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
           color="amber"
           onClick={() => navigateTo('corrections')}
         />
+        {['PRINCIPAL', 'HOD', 'SUPER_ADMIN'].includes(activeRole) && (
+          <StatCard
+            title="Special Duty Approvals"
+            value={specialAttendanceEvents.filter(e => e.status === 'PENDING_PRINCIPAL' || e.status === 'FORWARDED_TO_PRINCIPAL').length}
+            subtitle={activeRole === 'PRINCIPAL' ? "Awaiting your sanction" : "Forwarded to Principal"}
+            icon={<ShieldCheck className="w-5 h-5" />}
+            color="emerald"
+            onClick={() => navigateTo('special-attendance')}
+          />
+        )}
       </div>
+
+      {/* Principal Special Attendance Sanction Desk */}
+      {['PRINCIPAL', 'SUPER_ADMIN'].includes(activeRole) && (
+        <div className="bg-white rounded-2xl border-2 border-amber-200/90 p-5 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2.5 rounded-xl bg-amber-500 text-white shadow-xs">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Principal Sanction Desk • Special & Union Attendance
+                  </h3>
+                  {specialAttendanceEvents.filter(e => e.status === 'PENDING_PRINCIPAL' || e.status === 'FORWARDED_TO_PRINCIPAL').length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                      Action Required
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500">
+                  Students participating in College Union programmes or political party youth wing conventions marked Absent by teachers. Forwarded by HODs for statutory sanction.
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => navigateTo('special-attendance')}
+              className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs self-start sm:self-auto cursor-pointer"
+            >
+              Open Full Desk <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {specialAttendanceEvents.filter(e => e.status === 'PENDING_PRINCIPAL' || e.status === 'FORWARDED_TO_PRINCIPAL').length === 0 ? (
+            <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 text-center text-xs text-slate-500">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 mx-auto mb-1" />
+              All special duty attendance requests from HODs have been processed and consolidated.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {specialAttendanceEvents
+                .filter(e => e.status === 'PENDING_PRINCIPAL' || e.status === 'FORWARDED_TO_PRINCIPAL')
+                .slice(0, 3)
+                .map(evt => (
+                  <div
+                    key={evt.id}
+                    className="p-3.5 rounded-xl bg-amber-50/60 border border-amber-200/80 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-amber-200 text-amber-900 text-[10px] font-bold uppercase">
+                          {evt.eventType.replace('_', ' ')}
+                        </span>
+                        <span className="font-bold text-slate-900">{evt.title}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-600 flex flex-wrap items-center gap-x-2">
+                        <span><strong>Date:</strong> {evt.eventDate}</span>
+                        <span>•</span>
+                        <span><strong>Coverage:</strong> {evt.isFullDay ? 'Full Day' : `${evt.periodIds?.length || 1} Period(s)`}</span>
+                        {evt.dutyCertificateRef && (
+                          <>
+                            <span>•</span>
+                            <span><strong>Cert Ref:</strong> <code className="font-mono">{evt.dutyCertificateRef}</code></span>
+                          </>
+                        )}
+                        {evt.forwardedByHodName && (
+                          <>
+                            <span>•</span>
+                            <span><strong>HOD:</strong> {evt.forwardedByHodName}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={async () => {
+                          await updateSpecialAttendanceStatus(
+                            evt.id,
+                            'APPROVED',
+                            `Sanctioned under University Ordinance Rule 14 by Principal on ${new Date().toLocaleDateString()}. Consolidated to student attendance.`
+                          );
+                        }}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-2xs flex items-center gap-1 cursor-pointer"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        Quick Approve
+                      </button>
+                      <button
+                        onClick={() => navigateTo('special-attendance')}
+                        className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold transition-all cursor-pointer"
+                      >
+                        Review
+                      </button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* HOD Subject Approval Requests & Allocation Queue */}
       {['HOD', 'PRINCIPAL', 'SUPER_ADMIN'].includes(activeRole) && (

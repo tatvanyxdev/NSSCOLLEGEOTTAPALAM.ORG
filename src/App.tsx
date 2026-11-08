@@ -45,7 +45,6 @@ import { CertificateRequestsView } from './components/views/CertificateRequestsV
 import { AcademicResourcesView } from './components/views/AcademicResourcesView';
 import { DepartmentHubView } from './components/views/DepartmentHubView';
 import { BusConcessionView } from './components/views/BusConcessionView';
-import { ComplaintsManagerView } from './components/views/ComplaintsManagerView';
 
 const tabTitles: Record<string, string> = {
   dashboard: 'Dashboard',
@@ -70,8 +69,7 @@ const tabTitles: Record<string, string> = {
   'student-requests': 'Certificate Requests',
   resources: 'Academic Downloads',
   'department-hub': 'Department Hub',
-  'bus-concession': 'Bus Concession Desk',
-  complaints: 'Grievance & Vigilance Cell'
+  'bus-concession': 'Bus Concession Desk'
 };
 
 const MainLayout: React.FC = () => {
@@ -181,8 +179,6 @@ const MainLayout: React.FC = () => {
         return <CertificateRequestsView />;
       case 'bus-concession':
         return <BusConcessionView />;
-      case 'complaints':
-        return <ComplaintsManagerView />;
       case 'resources':
         return <AcademicResourcesView />;
       case 'department-hub':

@@ -83,6 +83,9 @@ export const mapStudentFromDb = (row: any): Student => ({
   bloodGroup: row.blood_group || row.bloodGroup || '',
   guardianName: row.guardian_name || row.guardianName || row.parent_name || '',
   guardianPhone: row.guardian_phone || row.guardianPhone || row.parent_phone || '',
+  dateOfBirth: row.date_of_birth || row.dateOfBirth || '',
+  gender: row.gender || 'OTHER',
+  address: row.address || '',
   status: row.status || 'ACTIVE',
   isActive: row.is_active !== undefined ? row.is_active : true,
   createdAt: row.created_at || row.createdAt || new Date().toISOString()
@@ -302,19 +305,27 @@ export const mapSubstituteAssignmentFromDb = (row: any): any => ({
   reason: row.reason || ''
 });
 
-export const mapAnnouncementFromDb = (row: any): any => ({
-  id: row.id,
-  title: row.title || '',
-  content: row.content || '',
-  category: row.category || 'GENERAL',
-  publishedAt: row.published_at || row.publishedAt || new Date().toISOString(),
-  expiryDate: row.expiry_date || row.expiryDate || undefined,
-  authorFacultyId: row.author_id || row.authorFacultyId || undefined,
-  targetRoles: Array.isArray(row.target_roles) ? row.target_roles : ['ALL'],
-  targetDepartmentId: row.department_id || row.targetDepartmentId || undefined,
-  isPinned: !!row.is_pinned,
-  isActive: row.is_active !== undefined ? row.is_active : true
-});
+export const mapAnnouncementFromDb = (row: any): any => {
+  const contentText = row.content || row.message || row.description || row.body || row.details || '';
+  return {
+    id: row.id,
+    title: row.title || '',
+    content: contentText,
+    message: contentText,
+    category: row.category || 'GENERAL',
+    priority: row.priority || 'NORMAL',
+    targetAudience: row.target_audience || (Array.isArray(row.target_roles) ? row.target_roles[0] : 'ALL'),
+    authorName: row.author_name || row.created_by || 'College Administration',
+    publishDate: (row.created_at || row.published_at || new Date().toISOString()).split('T')[0],
+    publishedAt: row.published_at || row.created_at || new Date().toISOString(),
+    expiryDate: row.expiry_date || row.expiryDate || undefined,
+    authorFacultyId: row.author_id || row.authorFacultyId || undefined,
+    targetRoles: Array.isArray(row.target_roles) ? row.target_roles : (row.target_audience ? [row.target_audience] : ['ALL']),
+    targetDepartmentId: row.department_id || row.targetDepartmentId || undefined,
+    isPinned: !!row.is_pinned,
+    isActive: row.is_active !== undefined ? row.is_active : true
+  };
+};
 
 export const mapAuditLogFromDb = (row: any): any => ({
   id: row.id,
@@ -369,12 +380,18 @@ export const mapSpecialAttendanceEventFromDb = (row: any): SpecialAttendanceEven
   studentCoverage: row.student_coverage || 'ALL_ELIGIBLE',
   selectedStudentIds: Array.isArray(row.selected_student_ids) ? row.selected_student_ids : typeof row.selected_student_ids === 'string' ? JSON.parse(row.selected_student_ids || '[]') : [],
   reason: row.reason || '',
+  dutyCertificateRef: row.duty_certificate_ref || undefined,
+  forwardedByHodId: row.forwarded_by_hod_id || undefined,
+  forwardedByHodName: row.forwarded_by_hod_name || undefined,
+  forwardedAt: row.forwarded_at || undefined,
   status: row.status || 'APPLIED',
   createdBy: row.created_by || '',
   createdByName: row.created_by_name || 'Authorized Officer',
   createdByRole: row.created_by_role || 'HOD',
   approvedBy: row.approved_by || undefined,
   approvedByName: row.approved_by_name || undefined,
+  principalRemarks: row.principal_remarks || undefined,
+  principalActionAt: row.principal_action_at || undefined,
   createdAt: row.created_at || new Date().toISOString(),
   updatedAt: row.updated_at || new Date().toISOString()
 });
@@ -388,6 +405,7 @@ export const mapSpecialAttendanceRecordFromDb = (row: any): SpecialAttendanceRec
   attendanceStatus: row.attendance_status || 'SPECIAL',
   attendanceSource: 'SPECIAL',
   normalSessionConflictStatus: row.normal_session_conflict_status || 'NO_SESSION',
+  originalTeacherStatus: row.original_teacher_status || 'ABSENT',
   remarks: row.remarks || '',
   createdAt: row.created_at || new Date().toISOString()
 });

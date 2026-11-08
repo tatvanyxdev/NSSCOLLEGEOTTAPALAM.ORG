@@ -4,8 +4,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import { can } from '../../config/permissions';
 import { Modal, Badge } from '../common/UIComponents';
 import { Course, CourseGroup } from '../../types';
-import { BookOpen, Plus, Edit2, Layers, Search, Filter, Users, Building, FileSpreadsheet } from 'lucide-react';
+import { BookOpen, Plus, Edit2, Layers, Search, Filter, Users, Building, FileSpreadsheet, Sparkles } from 'lucide-react';
 import { BulkCourseUploadModal } from '../modals/BulkCourseUploadModal';
+import { ProvisionalCourseMappingModal } from '../faculty/ProvisionalCourseMappingModal';
 
 export const CoursesMasterView: React.FC = () => {
   const {
@@ -42,6 +43,7 @@ export const CoursesMasterView: React.FC = () => {
   const [editingCourse, setEditingCourse] = useState<Course | null>(null);
   const [isSavingCourse, setIsSavingCourse] = useState(false);
   const [courseError, setCourseError] = useState<string | null>(null);
+  const [provisionalCourseToMap, setProvisionalCourseToMap] = useState<Course | null>(null);
 
   // Group creation modal
   const [isAddGroupOpen, setIsAddGroupOpen] = useState(false);
@@ -354,6 +356,23 @@ export const CoursesMasterView: React.FC = () => {
                 <p className="text-xs text-blue-700 font-mono font-bold mt-0.5">{course.courseCode}</p>
                 <p className="text-xs text-slate-500 mt-0.5">{dept?.name}</p>
 
+                {course.courseCode.startsWith('TEMP-') && (
+                  <div className="mt-2.5 flex items-center justify-between gap-1 p-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
+                    <span className="flex items-center gap-1 font-semibold text-[11px]">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      Provisional
+                    </span>
+                    {(isHOD || canEdit) && (
+                      <button
+                        onClick={() => setProvisionalCourseToMap(course)}
+                        className="px-2 py-0.5 rounded-md bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white text-[10px] font-bold shadow-2xs transition-colors"
+                      >
+                        Map Calicut Code
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {/* Credits Pill */}
                 <div className="grid grid-cols-3 gap-2 mt-3 pt-2.5 border-t border-slate-100 text-center text-xs">
                   <div className="bg-slate-50 p-2 rounded-lg">
@@ -662,6 +681,15 @@ export const CoursesMasterView: React.FC = () => {
           // Courses list updates via CollegeDataContext automatically
         }}
       />
+
+      {/* Provisional Course Official University Mapping Modal */}
+      {provisionalCourseToMap && (
+        <ProvisionalCourseMappingModal
+          isOpen={!!provisionalCourseToMap}
+          onClose={() => setProvisionalCourseToMap(null)}
+          provisionalCourse={provisionalCourseToMap}
+        />
+      )}
     </div>
   );
 };

@@ -2,14 +2,9 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Global Safety Net: Default-deny all unspecified access
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
     // Helper functions
     function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() > 0 && id.size() <= 128;
     }
 
     function incoming() {
@@ -20,22 +15,29 @@ service cloud.firestore {
       return resource.data;
     }
 
-    function isValidComplaint(data) {
+    function isValidSpecialAttendanceEvent(data) {
       return data.id is string && data.id.size() <= 128
-        && data.ticketNumber is string && data.ticketNumber.size() <= 64
         && data.title is string && data.title.size() > 0 && data.title.size() <= 300
-        && data.description is string && data.description.size() > 0 && data.description.size() <= 5000
-        && data.category is string && data.category.size() <= 64
-        && data.scope is string && (data.scope == 'CAMPUS_WIDE' || data.scope == 'DEPARTMENT_WISE')
+        && data.eventType is string && data.eventType.size() <= 64
+        && data.eventDate is string && data.eventDate.size() <= 32
+        && data.scopeType is string && data.scopeType.size() <= 64
+        && data.reason is string && data.reason.size() <= 3000
         && data.status is string && (
-          data.status == 'SUBMITTED' ||
-          data.status == 'UNDER_INVESTIGATION' ||
-          data.status == 'ACTION_TAKEN' ||
-          data.status == 'RESOLVED' ||
-          data.status == 'DISMISSED'
-        )
-        && data.submittedAt is string && data.submittedAt.size() <= 64
-        && data.updatedAt is string && data.updatedAt.size() <= 64;
+          data.status == 'PENDING_PRINCIPAL' ||
+          data.status == 'APPROVED' ||
+          data.status == 'REJECTED' ||
+          data.status == 'APPLIED' ||
+          data.status == 'DRAFT'
+        );
+    }
+
+    function isValidAnnouncement(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 300
+        && data.content is string && data.content.size() > 0 && data.content.size() <= 10000
+        && data.authorName is string && data.authorName.size() <= 128
+        && data.authorRole is string && data.authorRole.size() <= 64
+        && data.targetAudience is string && data.targetAudience.size() <= 64;
     }
 
     function isValidPushNotification(data) {
@@ -58,30 +60,67 @@ service cloud.firestore {
         && data.createdAt is string && data.createdAt.size() <= 64;
     }
 
-    // Complaints Collection
-    match /complaints/{complaintId} {
-      allow get: if isValidId(complaintId);
-      allow list: if true;
-      allow create: if isValidId(complaintId)
-        && isValidComplaint(incoming())
-        && incoming().id == complaintId
-        && incoming().status == 'SUBMITTED';
-      allow update: if isValidId(complaintId)
-        && isValidComplaint(incoming())
-        && incoming().id == existing().id
-        && incoming().ticketNumber == existing().ticketNumber
-        && incoming().submittedAt == existing().submittedAt;
-      allow delete: if false;
+    function isValidStudentAttendanceSummary(data) {
+      return data.studentId is string && data.studentId.size() <= 128
+        && data.rollNumber is string && data.rollNumber.size() <= 64
+        && data.regularPercentage is number
+        && data.consolidatedPercentage is number
+        && data.totalConducted is number;
+    }
+
+    function isValidGoogleAccountLink(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.email is string && data.email.size() <= 200
+        && data.userType is string && (
+          data.userType == 'STUDENT' ||
+          data.userType == 'STAFF' ||
+          data.userType == 'SUPER_ADMIN'
+        )
+        && data.profileId is string && data.profileId.size() <= 128
+        && data.linkedAt is string && data.linkedAt.size() <= 64;
+    }
+
+    // Special Attendance Events Collection
+    match /special_attendance_events/{eventId} {
+      allow get, list: if true;
+      allow create: if isValidId(eventId) && isValidSpecialAttendanceEvent(incoming());
+      allow update: if isValidId(eventId) && isValidSpecialAttendanceEvent(incoming());
+      allow delete: if true;
+    }
+
+    // Announcements Collection
+    match /announcements/{announcementId} {
+      allow get, list: if true;
+      allow create: if isValidId(announcementId) && isValidAnnouncement(incoming());
+      allow update: if isValidId(announcementId) && isValidAnnouncement(incoming());
+      allow delete: if true;
     }
 
     // Push Notifications Collection
     match /push_notifications/{notificationId} {
       allow get, list: if true;
-      allow create: if isValidId(notificationId)
-        && isValidPushNotification(incoming())
-        && incoming().id == notificationId;
+      allow create: if isValidId(notificationId) && isValidPushNotification(incoming());
       allow update: if false;
       allow delete: if false;
+    }
+
+    // Pre-aggregated Student Attendance Summaries (Ultra-low quota usage for free plans)
+    match /student_attendance_summaries/{studentId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(studentId) && isValidStudentAttendanceSummary(incoming());
+      allow delete: if true;
+    }
+
+    // Google Account Links Collection
+    match /google_account_links/{linkId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(linkId) && isValidGoogleAccountLink(incoming());
+      allow delete: if true;
+    }
+
+    // Deny anything else by default
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

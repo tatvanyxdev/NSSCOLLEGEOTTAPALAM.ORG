@@ -29,10 +29,65 @@
           }
         } catch (e) {}
       })();
+
+      // GitHub Pages SPA Path Restoration Script
+      (function(l) {
+        if (l.search[1] === '/' ) {
+          var decoded = l.search.slice(1).split('&').map(function(s) { 
+            return s.replace(/~and~/g, '&')
+          }).join('?');
+          window.history.replaceState(null, null,
+              l.pathname.slice(0, -1) + decoded + l.hash
+          );
+        } else if (l.search.indexOf('p=/') !== -1) {
+          var params = new URLSearchParams(l.search);
+          var path = params.get('p') || '/';
+          var query = params.get('q');
+          var finalUrl = l.pathname.replace(/\/$/, '') + path + (query ? '?' + query.replace(/~and~/g, '&') : '') + l.hash;
+          window.history.replaceState(null, null, finalUrl);
+        }
+      }(window.location));
     </script>
   </head>
   <body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans antialiased selection:bg-blue-600 selection:text-white transition-colors duration-200">
-    <div id="root"></div>
+    <div id="root">
+      <!-- High-performance inline preloader: guarantees zero blank white screen while JavaScript bundles compile/download -->
+      <div id="nss-preloader" style="min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #090d16; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px; text-align: center; box-sizing: border-box;">
+        <div style="width: 72px; height: 72px; border-radius: 20px; background: linear-gradient(135deg, #1e3a8a, #0284c7); display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px -5px rgba(2, 132, 199, 0.4); margin-bottom: 24px;">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+            <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+          </svg>
+        </div>
+        <h1 style="font-size: 20px; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 6px 0; color: #ffffff;">
+          NSS COLLEGE OTTAPALAM
+        </h1>
+        <p style="font-size: 13px; color: #94a3b8; font-weight: 500; margin: 0 0 24px 0; letter-spacing: 0.02em;">
+          FYUGP Comprehensive ERP &amp; Institutional Portal
+        </p>
+        <div style="width: 200px; height: 4px; background: rgba(255, 255, 255, 0.1); border-radius: 9999px; overflow: hidden; position: relative;">
+          <div style="position: absolute; top: 0; left: 0; bottom: 0; width: 45%; background: linear-gradient(90deg, #38bdf8, #818cf8); border-radius: 9999px; animation: nss-indeterminate 1.4s ease-in-out infinite;"></div>
+        </div>
+        <style>
+          @keyframes nss-indeterminate {
+            0% { left: -45%; width: 45%; }
+            50% { left: 35%; width: 60%; }
+            100% { left: 105%; width: 45%; }
+          }
+        </style>
+        <div id="nss-preloader-timeout" style="display: none; margin-top: 24px; padding: 12px 18px; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; max-width: 340px;">
+          <p style="font-size: 12px; color: #cbd5e1; margin: 0 0 10px 0;">Taking longer than expected? Clear cached data or reload:</p>
+          <button onclick="window.location.reload()" style="background: #2563eb; color: #ffffff; border: none; padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; margin-right: 8px;">Reload</button>
+          <button onclick="try { localStorage.clear(); sessionStorage.clear(); } catch(e){} window.location.reload();" style="background: #334155; color: #f8fafc; border: none; padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer;">Reset Cache</button>
+        </div>
+      </div>
+      <script>
+        setTimeout(function() {
+          var t = document.getElementById('nss-preloader-timeout');
+          if (t) t.style.display = 'block';
+        }, 7000);
+      </script>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -3,6 +3,7 @@ import { useCollegeData } from '../../contexts/CollegeDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { can } from '../../config/permissions';
 import { Modal } from '../common/UIComponents';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 import { Megaphone, Plus, Trash2, Calendar, UserCheck, Sparkles, AlertCircle } from 'lucide-react';
 
 export const AnnouncementsView: React.FC = () => {
@@ -16,11 +17,12 @@ export const AnnouncementsView: React.FC = () => {
 
   const [isPosting, setIsPosting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [noticeToDelete, setNoticeToDelete] = useState<{ id: string; title: string } | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
 
-  const canPost = can(activeRole, 'announcements', 'create');
-  const canDelete = can(activeRole, 'announcements', 'delete');
+  const canPost = can(activeRole, 'announcements', 'create') || ['SUPER_ADMIN', 'PRINCIPAL', 'HOD'].includes(activeRole);
+  const canDelete = can(activeRole, 'announcements', 'delete') || ['SUPER_ADMIN', 'PRINCIPAL', 'HOD'].includes(activeRole);
   const isStudent = activeRole === 'STUDENT';
 
   const visibleAnnouncements = announcements.filter(item => {
@@ -59,16 +61,21 @@ export const AnnouncementsView: React.FC = () => {
     setIsAddOpen(false);
   };
 
-  const handleDelete = async (id: string, titleText: string) => {
+  const handleDeleteClick = (id: string, titleText: string) => {
     if (!canDelete) return;
-    if (confirm(`Are you sure you want to remove notice "${titleText}"?`)) {
-      setDeletingId(id);
-      setPageError(null);
-      const res = await deleteAnnouncement(id);
-      setDeletingId(null);
-      if (!res.success) {
-        setPageError(res.error || 'Failed to delete notice from Supabase database.');
-      }
+    setNoticeToDelete({ id, title: titleText });
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!noticeToDelete) return;
+    const { id, title: titleText } = noticeToDelete;
+    setDeletingId(id);
+    setPageError(null);
+    const res = await deleteAnnouncement(id);
+    setDeletingId(null);
+    setNoticeToDelete(null);
+    if (!res.success) {
+      setPageError(res.error || 'Failed to delete notice from database.');
     }
   };
 
@@ -121,7 +128,7 @@ export const AnnouncementsView: React.FC = () => {
                     </span>
                     {canDelete && (
                       <button
-                        onClick={() => handleDelete(item.id, item.title)}
+                        onClick={() => handleDeleteClick(item.id, item.title)}
                         disabled={deletingId === item.id}
                         className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors disabled:opacity-50"
                         title="Delete Notice"
@@ -228,9 +235,31 @@ export const AnnouncementsView: React.FC = () => {
                 )}
               </button>
             </div>
-        </form>
-      </Modal>
+          </form>
+        </Modal>
       )}
+
+      {/* Confirm Delete Notice Modal */}
+      <ConfirmDialog
+        isOpen={!!noticeToDelete}
+        onClose={() => setNoticeToDelete(null)}
+        onConfirm={handleConfirmDelete}
+        isLoading={!!deletingId}
+        title="Delete Announcement"
+        message={
+          <div>
+            <p>
+              Are you sure you want to permanently remove{' '}
+              <strong className="text-slate-900">{noticeToDelete?.title}</strong>?
+            </p>
+            <p className="mt-2 text-rose-600 font-medium">
+              This announcement will be removed from notice boards across all dashboards immediately.
+            </p>
+          </div>
+        }
+        confirmLabel="Yes, Delete Announcement"
+        variant="danger"
+      />
     </div>
   );
 };

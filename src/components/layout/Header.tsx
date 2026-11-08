@@ -17,15 +17,17 @@ import {
   Database,
   Search,
   KeyRound,
-  X,
-  Lock,
   UserCheck,
-  Wrench
+  Wrench,
+  RotateCcw,
+  X,
+  Lock
 } from 'lucide-react';
 import { securityShieldService } from '../../services/securityShieldService';
 import { pushNotificationService } from '../../services/pushNotificationService';
 import { SecurityOperationsModal } from '../modals/SecurityOperationsModal';
 import { ThemeToggleButton, ThemeToggleSwitch } from '../common/ThemeToggle';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 
 interface HeaderProps {
   onOpenSidebar?: () => void;
@@ -52,13 +54,16 @@ export const Header: React.FC<HeaderProps> = ({
     syncStatus,
     domainHealth,
     lastSyncTimestamp,
-    syncWithDatabase
+    syncWithDatabase,
+    resetToDefaultData
   } = useCollegeData();
 
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isHealthOpen, setIsHealthOpen] = useState(false);
   const [isSyncingManually, setIsSyncingManually] = useState(false);
   const [isSecurityModalOpen, setIsSecurityModalOpen] = useState(false);
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
+  const [isResettingApp, setIsResettingApp] = useState(false);
   const [isDbPaused, setIsDbPaused] = useState(securityShieldService.isDatabaseConnectionPaused());
   const [threatCount, setThreatCount] = useState(securityShieldService.getSecurityIncidents().length);
 
@@ -299,6 +304,25 @@ export const Header: React.FC<HeaderProps> = ({
                     {lastSyncTimestamp ? new Date(lastSyncTimestamp).toLocaleTimeString() : 'Startup'}
                   </span>
                 </div>
+
+                {domainHealth && (
+                  <div className="pt-2 border-t border-slate-100 max-h-48 overflow-y-auto space-y-1">
+                    <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1">Domain Health</p>
+                    {Object.entries(domainHealth).map(([domain, st]) => (
+                      <div key={domain} className="flex items-center justify-between text-[11px]">
+                        <span className="text-slate-600 capitalize">{domain.replace(/([A-Z])/g, ' $1')}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                          st === 'ok' ? 'bg-emerald-100 text-emerald-800' :
+                          st === 'empty' ? 'bg-blue-100 text-blue-800' :
+                          st === 'error' ? 'bg-rose-100 text-rose-800' :
+                          'bg-slate-100 text-slate-600'
+                        }`}>
+                          {st === 'ok' ? 'Active' : st === 'empty' ? 'Clean / Empty' : st === 'error' ? 'Error' : st}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -485,6 +509,27 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               )}
 
+              {/* Super Admin Quick Reset Button for testing */}
+              {activeRole === 'SUPER_ADMIN' && (
+                <div className="px-2 py-1.5 border-b border-slate-100 bg-rose-50/50">
+                  <button
+                    onClick={() => {
+                      setIsProfileOpen(false);
+                      setIsResetConfirmOpen(true);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 text-xs rounded-md font-bold text-rose-700 hover:bg-rose-100 flex items-center justify-between transition-colors"
+                  >
+                    <span className="flex items-center gap-2">
+                      <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
+                      Reset Testing Data
+                    </span>
+                    <span className="text-[10px] text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded font-black border border-rose-200">
+                      Clean App
+                    </span>
+                  </button>
+                </div>
+              )}
+
               {/* Theme Preference Switch */}
               <div className="px-3.5 py-2.5 border-b border-slate-100 flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-700">Display Theme</span>
@@ -504,6 +549,34 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
       </div>
+
+      {/* Super Admin Reset Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={isResetConfirmOpen}
+        onClose={() => setIsResetConfirmOpen(false)}
+        onConfirm={async () => {
+          setIsResettingApp(true);
+          try {
+            await resetToDefaultData(true);
+            setIsResetConfirmOpen(false);
+          } finally {
+            setIsResettingApp(false);
+          }
+        }}
+        title="Erase All Test Data & Reset to Fresh App?"
+        message={
+          <div>
+            <p className="text-sm font-semibold text-slate-900">
+              Are you sure you want to erase all test attendance records, sessions, and test inputs?
+            </p>
+            <p className="mt-2 text-xs text-rose-700 font-medium leading-relaxed bg-rose-50 p-2.5 rounded-lg border border-rose-200">
+              This clears all test attendance markings, timetable test sessions, and cached storage. Your college structure (departments, programmes, courses) will remain intact. The app will return to a clean, fresh state ready for your next round of testing.
+            </p>
+          </div>
+        }
+        confirmLabel={isResettingApp ? 'Resetting...' : 'Yes, Erase & Clean App'}
+        variant="danger"
+      />
 
       {/* Staff Portal Credentials Modal */}
       {isCredentialModalOpen && (

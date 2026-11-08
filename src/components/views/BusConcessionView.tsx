@@ -422,7 +422,7 @@ export const BusConcessionView: React.FC = () => {
   const handleSaveWebhook = () => {
     busConcessionService.setSheetsWebhookUrl(webhookUrl);
     setIsSheetsModalOpen(false);
-    alert('Google Sheets Webhook URL saved successfully!');
+    setSubmitSuccessNotice('Google Sheets Webhook URL saved successfully!');
   };
 
   const quickStops = [
@@ -1209,15 +1209,9 @@ export const BusConcessionView: React.FC = () => {
                         {app.status === 'SUBMITTED' && (isHod || isSuperOrPrincipal) && (
                           <button
                             onClick={() => {
-                              const remarks = prompt(
-                                `Confirm HOD verification for ${app.studentName} (${app.subject})? Enter remarks:`,
-                                'Verified admission and residential distance.'
-                              );
-                              if (remarks !== null) {
-                                handleUpdateStatus(app.id, 'VERIFIED_BY_HOD', remarks);
-                              }
+                              handleUpdateStatus(app.id, 'VERIFIED_BY_HOD', 'Verified admission and residential distance.');
                             }}
-                            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-all flex items-center gap-1"
+                            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-all flex items-center gap-1 cursor-pointer"
                             title="Verify and Recommend to Principal"
                           >
                             <Check className="w-3 h-3" />

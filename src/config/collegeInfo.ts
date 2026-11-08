@@ -217,16 +217,16 @@ export const COLLEGE_INFO = {
       description: 'Confidential psychological support, emotional guidance, stress management, and mental health awareness programs.'
     },
     {
-      id: 'cell-grievance',
-      name: 'Grievance Redressal & Anti-Ragging Cell',
+      id: 'cell-discipline',
+      name: 'Anti-Ragging Squad & Campus Vigilance',
       category: 'Support & Welfare',
-      description: 'Strict statutory body safeguarding student dignity, immediate resolution of complaints, and ensuring a zero-tolerance ragging-free campus.'
+      description: 'Statutory body safeguarding student dignity, campus harmony, and ensuring a zero-tolerance ragging-free campus.'
     },
     {
       id: 'cell-women',
-      name: 'Women’s Cell & Internal Complaints Committee (ICC)',
+      name: 'Women’s Cell & Empowerment Committee',
       category: 'Support & Welfare',
-      description: 'Promoting gender equity, self-defense workshops, leadership training, and statutory protection against harassment.'
+      description: 'Promoting gender equity, self-defense workshops, leadership training, and campus safety.'
     }
   ] as StudentClubCell[],
 

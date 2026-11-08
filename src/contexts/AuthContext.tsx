@@ -1,6 +1,11 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { UserRole, Faculty, Student } from '../types';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { GoogleAuthProvider, signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
+import { auth as firebaseAuth } from '../lib/firebase';
+import { firebaseSyncService } from '../services/firebaseSyncService';
+import { studentService } from '../services/studentService';
+import { facultyService } from '../services/facultyService';
 
 /**
  * ==============================================================================
@@ -24,6 +29,15 @@ export interface AuthUser {
   studentProfile?: Student;
   departmentId?: string;
   isDemoRole?: boolean;
+  googleEmail?: string;
+  isGoogleLinked?: boolean;
+}
+
+export interface GoogleAuthProfile {
+  email: string;
+  displayName: string;
+  photoURL: string;
+  uid: string;
 }
 
 interface AuthContextType {
@@ -33,6 +47,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   isDevAuthMode: boolean;
+  googleAuthUser: GoogleAuthProfile | null;
   switchRole: (role: UserRole) => void;
   loginAsDemoRole: (role: UserRole) => void;
   loginAsDemoUser: (role: UserRole) => void; // alias for backwards compatibility
@@ -47,6 +62,31 @@ interface AuthContextType {
     pass: string,
     facultyList: Faculty[]
   ) => { success: boolean; error?: string; faculty?: Faculty };
+  signInWithGoogle: (
+    studentsList: Student[],
+    facultyList: Faculty[]
+  ) => Promise<{
+    success: boolean;
+    needsOnboardingLink?: boolean;
+    googleUser?: GoogleAuthProfile;
+    matchedRole?: UserRole;
+    error?: string;
+  }>;
+  linkGoogleAccountToStudent: (
+    googleEmail: string,
+    registerNumberOrUsername: string,
+    password: string,
+    studentsList: Student[],
+    googleProfile?: { displayName?: string; photoURL?: string; uid?: string }
+  ) => Promise<{ success: boolean; error?: string; student?: Student }>;
+  linkGoogleAccountToStaff: (
+    googleEmail: string,
+    identifier: string,
+    password: string,
+    facultyList: Faculty[],
+    googleProfile?: { displayName?: string; photoURL?: string; uid?: string }
+  ) => Promise<{ success: boolean; error?: string; faculty?: Faculty }>;
+  unlinkGoogleAccount: (email: string) => Promise<{ success: boolean; error?: string }>;
   updateCurrentUser: (updatedFields: Partial<AuthUser>) => void;
   updateFacultyProfile: (faculty: Partial<Faculty>) => void;
   linkFacultyProfile: (faculty: Faculty) => void;
@@ -124,6 +164,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
 
   const [isLoading, setIsLoading] = useState(false);
+  const [googleAuthUser, setGoogleAuthUser] = useState<GoogleAuthProfile | null>(null);
 
   // Listen for real-time auth synchronization events across components
   useEffect(() => {
@@ -528,7 +569,424 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  /**
+   * ============================================================================
+   * GOOGLE SIGN-IN INTEGRATION (1-TAP MOBILE & DESKTOP AUTHENTICATION)
+   * ============================================================================
+   * Uses Firebase Auth GoogleAuthProvider with prompt='select_account'.
+   * When clicked on mobile or web, it immediately shows all Google accounts
+   * present on the device so the user can choose their registered college email.
+   * Matches seamlessly against:
+   *  1. Super Admin master accounts
+   *  2. Principal office accounts
+   *  3. Enrolled students (by registered email or previously linked account)
+   *  4. Appointed faculty & staff (by official email or linked account)
+   *  5. If not yet linked: prompts an elegant onboarding credential link modal.
+   * ============================================================================
+   */
+  const signInWithGoogle = async (
+    studentsList: Student[],
+    facultyList: Faculty[]
+  ): Promise<{
+    success: boolean;
+    needsOnboardingLink?: boolean;
+    googleUser?: GoogleAuthProfile;
+    matchedRole?: UserRole;
+    error?: string;
+  }> => {
+    setIsLoading(true);
+    try {
+      const provider = new GoogleAuthProvider();
+      // Forces the account chooser to appear showing all Google accounts on device
+      provider.setCustomParameters({
+        prompt: 'select_account'
+      });
+
+      const cred = await signInWithPopup(firebaseAuth, provider);
+      const gUser = cred.user;
+      const cleanEmail = (gUser.email || '').trim().toLowerCase();
+
+      if (!cleanEmail) {
+        setIsLoading(false);
+        return { success: false, error: 'No email returned from selected Google account.' };
+      }
+
+      const parsedGoogleUser: GoogleAuthProfile = {
+        email: cleanEmail,
+        displayName: gUser.displayName || cleanEmail.split('@')[0],
+        photoURL: gUser.photoURL || '',
+        uid: gUser.uid
+      };
+      setGoogleAuthUser(parsedGoogleUser);
+
+      // 1. Check Super Admin & Principal Master Accounts
+      const isSuperAdminEmail =
+        cleanEmail === 'admin@nssce.ac.in' ||
+        cleanEmail === 'tatvanyxdev@gmail.com' ||
+        cleanEmail === 'superadmin@nssce.ac.in';
+
+      if (isSuperAdminEmail) {
+        const adminUser: AuthUser = {
+          id: 'super-admin-master',
+          email: cleanEmail,
+          name: parsedGoogleUser.displayName || 'System Super Administrator',
+          avatarUrl: parsedGoogleUser.photoURL || undefined,
+          roles: ['SUPER_ADMIN', 'PRINCIPAL', 'HOD', 'TEACHER'],
+          activeRole: 'SUPER_ADMIN',
+          isDemoRole: false,
+          googleEmail: cleanEmail,
+          isGoogleLinked: true
+        };
+        setUser(adminUser);
+        localStorage.setItem('college_dev_logged_in', 'true');
+        localStorage.setItem('college_dev_role', 'SUPER_ADMIN');
+        localStorage.setItem('nss_auth_user', JSON.stringify(adminUser));
+        setIsLoading(false);
+        return { success: true, matchedRole: 'SUPER_ADMIN' };
+      }
+
+      if (cleanEmail === 'principal@nssce.ac.in') {
+        const principalUser: AuthUser = {
+          id: 'principal-master',
+          email: cleanEmail,
+          name: parsedGoogleUser.displayName || 'Dr. Principal (Office of the Principal)',
+          avatarUrl: parsedGoogleUser.photoURL || undefined,
+          roles: ['PRINCIPAL', 'TEACHER'],
+          activeRole: 'PRINCIPAL',
+          isDemoRole: false,
+          googleEmail: cleanEmail,
+          isGoogleLinked: true
+        };
+        setUser(principalUser);
+        localStorage.setItem('college_dev_logged_in', 'true');
+        localStorage.setItem('college_dev_role', 'PRINCIPAL');
+        localStorage.setItem('nss_auth_user', JSON.stringify(principalUser));
+        setIsLoading(false);
+        return { success: true, matchedRole: 'PRINCIPAL' };
+      }
+
+      // 2. Check Direct Student Match in registered student database
+      const matchedStudent = studentsList.find(s => {
+        const emailMatch = s.email && s.email.trim().toLowerCase() === cleanEmail;
+        const googleEmailMatch = (s as any).googleEmail && (s as any).googleEmail.trim().toLowerCase() === cleanEmail;
+        return emailMatch || googleEmailMatch;
+      });
+
+      if (matchedStudent) {
+        const studentUser: AuthUser = {
+          id: matchedStudent.id,
+          name: matchedStudent.fullName,
+          email: cleanEmail,
+          avatarUrl: matchedStudent.profilePhotoUrl || parsedGoogleUser.photoURL || undefined,
+          studentProfile: {
+            ...matchedStudent,
+            email: cleanEmail,
+            profilePhotoUrl: matchedStudent.profilePhotoUrl || parsedGoogleUser.photoURL || undefined
+          },
+          departmentId: matchedStudent.homeDepartmentId,
+          roles: ['STUDENT'],
+          activeRole: 'STUDENT',
+          isDemoRole: false,
+          googleEmail: cleanEmail,
+          isGoogleLinked: true
+        };
+        setUser(studentUser);
+        localStorage.setItem('college_dev_logged_in', 'true');
+        localStorage.setItem('college_dev_role', 'STUDENT');
+        localStorage.setItem('nss_auth_user', JSON.stringify(studentUser));
+        setIsLoading(false);
+        return { success: true, matchedRole: 'STUDENT' };
+      }
+
+      // 3. Check Direct Faculty / Staff Match in registered faculty database
+      const matchedFaculty = facultyList.find(f => {
+        const emailMatch = f.email && f.email.trim().toLowerCase() === cleanEmail;
+        const googleEmailMatch = (f as any).googleEmail && (f as any).googleEmail.trim().toLowerCase() === cleanEmail;
+        return emailMatch || googleEmailMatch;
+      });
+
+      if (matchedFaculty) {
+        const staffRoles: UserRole[] =
+          matchedFaculty.roles && matchedFaculty.roles.length > 0 ? (matchedFaculty.roles as UserRole[]) : ['TEACHER'];
+        const staffUser: AuthUser = {
+          id: matchedFaculty.id,
+          name: matchedFaculty.fullName,
+          email: cleanEmail,
+          avatarUrl: matchedFaculty.profileImageUrl || parsedGoogleUser.photoURL || undefined,
+          facultyProfile: {
+            ...matchedFaculty,
+            email: cleanEmail,
+            profileImageUrl: matchedFaculty.profileImageUrl || parsedGoogleUser.photoURL || undefined
+          },
+          departmentId: matchedFaculty.departmentId,
+          roles: staffRoles,
+          activeRole: staffRoles[0] || 'TEACHER',
+          isDemoRole: false,
+          googleEmail: cleanEmail,
+          isGoogleLinked: true
+        };
+        setUser(staffUser);
+        localStorage.setItem('college_dev_logged_in', 'true');
+        localStorage.setItem('college_dev_role', staffUser.activeRole);
+        localStorage.setItem('nss_auth_user', JSON.stringify(staffUser));
+        setIsLoading(false);
+        return { success: true, matchedRole: staffUser.activeRole };
+      }
+
+      // 4. Check Persistent Firestore / LocalStorage Google Link Mapping
+      const existingLink = await firebaseSyncService.getGoogleAccountLink(cleanEmail);
+      if (existingLink) {
+        if (existingLink.userType === 'STUDENT') {
+          const linkedStudent = studentsList.find(
+            s =>
+              s.id === existingLink.profileId ||
+              (s.universityRegisterNumber &&
+                s.universityRegisterNumber.toLowerCase() === existingLink.identifier?.toLowerCase()) ||
+              (s.admissionNumber &&
+                s.admissionNumber.toLowerCase() === existingLink.identifier?.toLowerCase())
+          );
+          if (linkedStudent) {
+            const studentUser: AuthUser = {
+              id: linkedStudent.id,
+              name: linkedStudent.fullName,
+              email: cleanEmail,
+              avatarUrl: linkedStudent.profilePhotoUrl || parsedGoogleUser.photoURL || undefined,
+              studentProfile: linkedStudent,
+              departmentId: linkedStudent.homeDepartmentId,
+              roles: ['STUDENT'],
+              activeRole: 'STUDENT',
+              isDemoRole: false,
+              googleEmail: cleanEmail,
+              isGoogleLinked: true
+            };
+            setUser(studentUser);
+            localStorage.setItem('college_dev_logged_in', 'true');
+            localStorage.setItem('college_dev_role', 'STUDENT');
+            localStorage.setItem('nss_auth_user', JSON.stringify(studentUser));
+            setIsLoading(false);
+            return { success: true, matchedRole: 'STUDENT' };
+          }
+        } else if (existingLink.userType === 'STAFF') {
+          const linkedFaculty = facultyList.find(
+            f =>
+              f.id === existingLink.profileId ||
+              (f.employeeCode &&
+                f.employeeCode.toLowerCase() === existingLink.identifier?.toLowerCase()) ||
+              (f.username &&
+                f.username.toLowerCase() === existingLink.identifier?.toLowerCase())
+          );
+          if (linkedFaculty) {
+            const staffRoles: UserRole[] =
+              linkedFaculty.roles && linkedFaculty.roles.length > 0 ? (linkedFaculty.roles as UserRole[]) : ['TEACHER'];
+            const staffUser: AuthUser = {
+              id: linkedFaculty.id,
+              name: linkedFaculty.fullName,
+              email: cleanEmail,
+              avatarUrl: linkedFaculty.profileImageUrl || parsedGoogleUser.photoURL || undefined,
+              facultyProfile: linkedFaculty,
+              departmentId: linkedFaculty.departmentId,
+              roles: staffRoles,
+              activeRole: staffRoles[0] || 'TEACHER',
+              isDemoRole: false,
+              googleEmail: cleanEmail,
+              isGoogleLinked: true
+            };
+            setUser(staffUser);
+            localStorage.setItem('college_dev_logged_in', 'true');
+            localStorage.setItem('college_dev_role', staffUser.activeRole);
+            localStorage.setItem('nss_auth_user', JSON.stringify(staffUser));
+            setIsLoading(false);
+            return { success: true, matchedRole: staffUser.activeRole };
+          }
+        }
+      }
+
+      // 5. Account verified by Google, but not yet linked to an institutional record
+      setIsLoading(false);
+      return {
+        success: false,
+        needsOnboardingLink: true,
+        googleUser: parsedGoogleUser
+      };
+    } catch (err: any) {
+      setIsLoading(false);
+      if (err?.code === 'auth/popup-closed-by-user') {
+        return { success: false, error: 'Sign-in window was closed. Please try again to choose your account.' };
+      }
+      if (err?.code === 'auth/popup-blocked') {
+        return { success: false, error: 'The Google Sign-In popup was blocked by your browser. Please allow popups for this site.' };
+      }
+      if (err?.code === 'auth/cancelled-popup-request') {
+        return { success: false, error: 'Another sign-in request was in progress. Please try again.' };
+      }
+      return { success: false, error: err?.message || 'Google Sign-In failed. Please try again.' };
+    }
+  };
+
+  const linkGoogleAccountToStudent = async (
+    googleEmail: string,
+    registerNumberOrUsername: string,
+    password: string,
+    studentsList: Student[],
+    googleProfile?: { displayName?: string; photoURL?: string; uid?: string }
+  ): Promise<{ success: boolean; error?: string; student?: Student }> => {
+    setIsLoading(true);
+    const cleanEmail = (googleEmail || '').trim().toLowerCase();
+
+    // Verify student credentials against existing master register
+    const credResult = loginWithStudentCredentials(registerNumberOrUsername, password, studentsList);
+    if (!credResult.success || !credResult.student) {
+      setIsLoading(false);
+      return { success: false, error: credResult.error || 'Invalid student credentials.' };
+    }
+
+    const matched = credResult.student;
+    const updatedStudent: Student = {
+      ...matched,
+      email: cleanEmail,
+      profilePhotoUrl: matched.profilePhotoUrl || googleProfile?.photoURL || undefined
+    };
+
+    // Save link mapping to Firestore & LocalStorage
+    const linkId = cleanEmail.replace(/[^a-zA-Z0-9_-]/g, '_');
+    await firebaseSyncService.syncGoogleAccountLink({
+      id: linkId,
+      email: cleanEmail,
+      userType: 'STUDENT',
+      profileId: matched.id,
+      name: matched.fullName,
+      identifier: matched.universityRegisterNumber || matched.admissionNumber,
+      linkedAt: new Date().toISOString()
+    });
+
+    // Update student in database/service
+    try {
+      await studentService.updateStudent(matched.id, {
+        email: cleanEmail,
+        profilePhotoUrl: updatedStudent.profilePhotoUrl
+      });
+    } catch (e) {
+      console.warn('Student email update fallback:', e);
+    }
+
+    // Set active student session
+    const studentUser: AuthUser = {
+      id: matched.id,
+      name: matched.fullName,
+      email: cleanEmail,
+      avatarUrl: updatedStudent.profilePhotoUrl,
+      studentProfile: updatedStudent,
+      departmentId: matched.homeDepartmentId,
+      roles: ['STUDENT'],
+      activeRole: 'STUDENT',
+      isDemoRole: false,
+      googleEmail: cleanEmail,
+      isGoogleLinked: true
+    };
+    setUser(studentUser);
+    localStorage.setItem('college_dev_logged_in', 'true');
+    localStorage.setItem('college_dev_role', 'STUDENT');
+    localStorage.setItem('nss_auth_user', JSON.stringify(studentUser));
+    setIsLoading(false);
+
+    return { success: true, student: updatedStudent };
+  };
+
+  const linkGoogleAccountToStaff = async (
+    googleEmail: string,
+    identifier: string,
+    password: string,
+    facultyList: Faculty[],
+    googleProfile?: { displayName?: string; photoURL?: string; uid?: string }
+  ): Promise<{ success: boolean; error?: string; faculty?: Faculty }> => {
+    setIsLoading(true);
+    const cleanEmail = (googleEmail || '').trim().toLowerCase();
+
+    const credResult = loginWithStaffCredentials(identifier, password, facultyList);
+    if (!credResult.success) {
+      setIsLoading(false);
+      return { success: false, error: credResult.error || 'Invalid staff credentials.' };
+    }
+
+    const matched = credResult.faculty || facultyList.find(f =>
+      (f.email && f.email.toLowerCase() === identifier.toLowerCase()) ||
+      (f.username && f.username.toLowerCase() === identifier.toLowerCase()) ||
+      (f.employeeCode && f.employeeCode.toLowerCase() === identifier.toLowerCase())
+    );
+
+    if (!matched) {
+      setIsLoading(false);
+      return { success: true };
+    }
+
+    const updatedFaculty: Faculty = {
+      ...matched,
+      email: cleanEmail,
+      profileImageUrl: matched.profileImageUrl || googleProfile?.photoURL || undefined
+    };
+
+    const linkId = cleanEmail.replace(/[^a-zA-Z0-9_-]/g, '_');
+    await firebaseSyncService.syncGoogleAccountLink({
+      id: linkId,
+      email: cleanEmail,
+      userType: 'STAFF',
+      profileId: matched.id,
+      name: matched.fullName,
+      identifier: matched.employeeCode || matched.username || matched.id,
+      linkedAt: new Date().toISOString()
+    });
+
+    try {
+      await facultyService.updateFaculty(matched.id, {
+        email: cleanEmail,
+        profileImageUrl: updatedFaculty.profileImageUrl
+      });
+    } catch (e) {
+      console.warn('Faculty email update fallback:', e);
+    }
+
+    const staffRoles: UserRole[] =
+      matched.roles && matched.roles.length > 0 ? (matched.roles as UserRole[]) : ['TEACHER'];
+    const staffUser: AuthUser = {
+      id: matched.id,
+      name: matched.fullName,
+      email: cleanEmail,
+      avatarUrl: updatedFaculty.profileImageUrl,
+      facultyProfile: updatedFaculty,
+      departmentId: matched.departmentId,
+      roles: staffRoles,
+      activeRole: staffRoles[0] || 'TEACHER',
+      isDemoRole: false,
+      googleEmail: cleanEmail,
+      isGoogleLinked: true
+    };
+    setUser(staffUser);
+    localStorage.setItem('college_dev_logged_in', 'true');
+    localStorage.setItem('college_dev_role', staffUser.activeRole);
+    localStorage.setItem('nss_auth_user', JSON.stringify(staffUser));
+    setIsLoading(false);
+
+    return { success: true, faculty: updatedFaculty };
+  };
+
+  const unlinkGoogleAccount = async (email: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      await firebaseSyncService.deleteGoogleAccountLink(email);
+      if (user) {
+        updateCurrentUser({ googleEmail: undefined, isGoogleLinked: false });
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  };
+
   const logout = async () => {
+    try {
+      await firebaseSignOut(firebaseAuth);
+    } catch (e) {
+      // ignore
+    }
     if (isSupabaseConfigured && supabase) {
       try {
         await supabase.auth.signOut();
@@ -536,6 +994,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // ignore
       }
     }
+    setGoogleAuthUser(null);
     localStorage.removeItem('college_dev_logged_in');
     localStorage.removeItem('college_dev_role');
     localStorage.removeItem('nss_auth_user');
@@ -551,12 +1010,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isAuthenticated: !!user,
         isLoading,
         isDevAuthMode: DEV_AUTH_MODE,
+        googleAuthUser,
         switchRole,
         loginAsDemoRole,
         loginAsDemoUser: loginAsDemoRole,
         loginAsStudent,
         loginWithStudentCredentials,
         loginWithStaffCredentials,
+        signInWithGoogle,
+        linkGoogleAccountToStudent,
+        linkGoogleAccountToStaff,
+        unlinkGoogleAccount,
         updateCurrentUser,
         updateFacultyProfile,
         linkFacultyProfile,

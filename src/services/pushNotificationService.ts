@@ -11,6 +11,7 @@ import {
   collection,
   doc,
   setDoc,
+  deleteDoc,
   getDocs,
   onSnapshot,
   query,
@@ -22,63 +23,8 @@ const STORAGE_KEY = 'nss_college_push_notifications_v1';
 const READ_STORAGE_KEY = 'nss_college_push_read_ids_v1';
 const FIRESTORE_COLLECTION = 'push_notifications';
 
-// Seed sample push notifications for realistic institutional context
-const INITIAL_PUSH_NOTIFICATIONS: PushNotificationMessage[] = [
-  {
-    id: 'push-seed-001',
-    title: 'Semester IV & VI Continuous Evaluation (CE) Portal Open',
-    body: 'Head of Departments and course tutors are requested to finalize and upload continuous internal evaluation marks before Friday 5:00 PM.',
-    senderRole: 'PRINCIPAL',
-    senderName: 'Dr. R. Rajesh (Principal)',
-    targetAudience: 'ALL_FACULTY',
-    priority: 'HIGH',
-    category: 'ACADEMIC',
-    actionUrl: 'attendance',
-    createdAt: new Date(Date.now() - 3600000 * 4).toISOString(),
-    deliveredCount: 48
-  },
-  {
-    id: 'push-seed-002',
-    title: 'Department of Computer Science: Lab Viva Timetable',
-    body: 'B.Sc. Computer Science Semester 4 Advanced Data Structures and Python practical exam will commence on Monday 9:30 AM at Software Lab 2.',
-    senderRole: 'HOD',
-    senderName: 'Prof. Anitha V (HOD Computer Science)',
-    senderDepartmentId: 'dept-cs',
-    senderDepartmentName: 'Computer Science',
-    targetAudience: 'MY_DEPARTMENT',
-    targetDepartmentId: 'dept-cs',
-    targetDepartmentName: 'Computer Science',
-    priority: 'NORMAL',
-    category: 'EXAM',
-    actionUrl: 'timetable',
-    createdAt: new Date(Date.now() - 3600000 * 8).toISOString(),
-    deliveredCount: 112
-  },
-  {
-    id: 'push-seed-003',
-    title: 'Campus Monsoon Safety & Heavy Rain Advisory',
-    body: 'As per Palakkad District Collectorate advisory, all evening sports activities stand suspended. Students are advised to take designated college transport.',
-    senderRole: 'PRINCIPAL',
-    senderName: 'Dr. R. Rajesh (Principal)',
-    targetAudience: 'ALL_CAMPUS',
-    priority: 'EMERGENCY',
-    category: 'EMERGENCY',
-    createdAt: new Date(Date.now() - 3600000 * 20).toISOString(),
-    deliveredCount: 1850
-  },
-  {
-    id: 'push-seed-004',
-    title: 'ERP Infrastructure Maintenance Scheduled',
-    body: 'Scheduled database indexing and anti-hack security audit will run on Saturday midnight (12:00 AM - 1:00 AM). Portal services will remain functional.',
-    senderRole: 'SUPER_ADMIN',
-    senderName: 'System Administrator',
-    targetAudience: 'ALL_CAMPUS',
-    priority: 'NORMAL',
-    category: 'MAINTENANCE',
-    createdAt: new Date(Date.now() - 3600000 * 36).toISOString(),
-    deliveredCount: 1940
-  }
-];
+// Clean initial push notification list with zero demo items
+const INITIAL_PUSH_NOTIFICATIONS: PushNotificationMessage[] = [];
 
 // In-memory subscribers
 type PushListener = (notifications: PushNotificationMessage[]) => void;
@@ -94,6 +40,7 @@ class PushNotificationService {
   private lastKnownIdSet: Set<string> = new Set();
 
   constructor() {
+    this.purgeLegacySeedDocs();
     this.loadFromStorage();
     this.loadReadIds();
     this.initFirestoreListener();
@@ -108,9 +55,10 @@ class PushNotificationService {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          this.notifications = parsed;
-          this.lastKnownIdSet = new Set(parsed.map(n => n.id));
+        if (Array.isArray(parsed)) {
+          const clean = parsed.filter((n: any) => n && n.id && !n.id.startsWith('push-seed-') && !n.id.includes('demo') && !n.id.includes('seed'));
+          this.notifications = clean;
+          this.lastKnownIdSet = new Set(clean.map((n: any) => n.id));
           return;
         }
       }
@@ -118,10 +66,10 @@ class PushNotificationService {
       console.warn('Failed reading push notifications from localStorage:', e);
     }
 
-    // Default to seed items
-    this.notifications = [...INITIAL_PUSH_NOTIFICATIONS];
+    // Default to clean empty list
+    this.notifications = [];
     this.saveToStorage();
-    this.lastKnownIdSet = new Set(this.notifications.map(n => n.id));
+    this.lastKnownIdSet = new Set();
   }
 
   private saveToStorage(): void {
@@ -249,8 +197,6 @@ class PushNotificationService {
         (snapshot) => {
           this.isFirestoreInitialized = true;
           if (snapshot.empty) {
-            // Seed to Firestore on first run
-            this.seedInitialToFirestore();
             return;
           }
 
@@ -258,7 +204,12 @@ class PushNotificationService {
           snapshot.forEach((d) => {
             const data = d.data() as PushNotificationMessage;
             if (data && data.id && data.title) {
-              remoteList.push(data);
+              if (data.id.startsWith('push-seed-') || data.id.includes('demo') || data.id.includes('seed')) {
+                // Asynchronously purge obsolete demo seed doc from Firestore
+                deleteDoc(doc(db, FIRESTORE_COLLECTION, data.id)).catch(() => {});
+              } else {
+                remoteList.push(data);
+              }
             }
           });
 
@@ -277,7 +228,7 @@ class PushNotificationService {
           // Merge and deduplicate
           const map = new Map<string, PushNotificationMessage>();
           [...remoteList, ...this.notifications].forEach((n) => {
-            if (!map.has(n.id)) {
+            if (!n.id.startsWith('push-seed-') && !n.id.includes('demo') && !map.has(n.id)) {
               map.set(n.id, n);
             }
           });
@@ -305,14 +256,12 @@ class PushNotificationService {
     }
   }
 
-  private async seedInitialToFirestore(): Promise<void> {
-    try {
-      for (const item of INITIAL_PUSH_NOTIFICATIONS) {
-        await setDoc(doc(db, FIRESTORE_COLLECTION, item.id), item);
-      }
-    } catch (e) {
-      console.warn('Failed seeding push notifications to Firestore:', e);
-    }
+  // Purge any legacy demo push seed docs from Firestore
+  private purgeLegacySeedDocs(): void {
+    const seedIds = ['push-seed-001', 'push-seed-002', 'push-seed-003', 'push-seed-004'];
+    seedIds.forEach(id => {
+      deleteDoc(doc(db, FIRESTORE_COLLECTION, id)).catch(() => {});
+    });
   }
 
   // ==========================================
@@ -450,6 +399,15 @@ class PushNotificationService {
 
   markAllAsRead(): void {
     this.notifications.forEach((n) => this.readIds.add(n.id));
+    this.saveReadIds();
+    this.notifySubscribers();
+  }
+
+  clearAllNotifications(): void {
+    this.notifications = [];
+    this.readIds = new Set();
+    this.lastKnownIdSet = new Set();
+    this.saveToStorage();
     this.saveReadIds();
     this.notifySubscribers();
   }

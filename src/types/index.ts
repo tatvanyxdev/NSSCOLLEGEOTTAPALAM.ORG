@@ -601,6 +601,7 @@ export type AttendanceSource = 'NORMAL' | 'SPECIAL';
 export type SpecialAttendanceEventType =
   | 'COLLEGE_PROGRAMME'
   | 'UNION_PROGRAMME'
+  | 'POLITICAL_UNION'
   | 'STRIKE'
   | 'OFFICIAL_EVENT'
   | 'DEPARTMENT_PROGRAMME'
@@ -622,7 +623,14 @@ export type SpecialAttendanceScope =
 
 export type StudentCoverageType = 'ALL_ELIGIBLE' | 'SELECTED_ONLY';
 
-export type SpecialAttendanceStatus = 'DRAFT' | 'APPROVED' | 'APPLIED' | 'CANCELLED';
+export type SpecialAttendanceStatus =
+  | 'DRAFT'
+  | 'PENDING_PRINCIPAL'
+  | 'FORWARDED_TO_PRINCIPAL'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'APPLIED'
+  | 'CANCELLED';
 
 export interface SpecialAttendanceEvent {
   id: string;
@@ -643,12 +651,18 @@ export interface SpecialAttendanceEvent {
   studentCoverage: StudentCoverageType;
   selectedStudentIds?: string[];
   reason: string;
+  dutyCertificateRef?: string;
+  forwardedByHodId?: string | null;
+  forwardedByHodName?: string | null;
+  forwardedAt?: string | null;
   status: SpecialAttendanceStatus;
   createdBy: string;
   createdByName?: string;
   createdByRole?: UserRole;
   approvedBy?: string | null;
   approvedByName?: string | null;
+  principalRemarks?: string | null;
+  principalActionAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -662,6 +676,7 @@ export interface SpecialAttendanceRecord {
   attendanceStatus: 'SPECIAL' | 'OD' | 'PRESENT';
   attendanceSource: 'SPECIAL';
   normalSessionConflictStatus?: 'NO_SESSION' | 'NORMAL_PRESENT' | 'NORMAL_ABSENT' | 'OVERRIDDEN' | 'SESSION_CANCELLED';
+  originalTeacherStatus?: 'ABSENT' | 'PRESENT' | 'OD' | 'NO_SESSION';
   remarks?: string;
   createdAt: string;
 }

@@ -27,6 +27,7 @@ import {
   AttendanceStatus,
   CourseAttendanceSummary,
   SpecialAttendanceEvent,
+  SpecialAttendanceEventType,
   SpecialAttendanceRecord,
   SpecialAttendanceStatus,
   DayOfWeek,
@@ -87,6 +88,9 @@ import { academicService } from '../services/academicService';
 import { announcementService } from '../services/announcementService';
 import { auditLogService } from '../services/auditLogService';
 import { facultySubjectService } from '../services/facultySubjectService';
+import { firebaseSyncService } from '../services/firebaseSyncService';
+import { pushNotificationService } from '../services/pushNotificationService';
+import { supabase } from '../lib/supabase';
 
 export type SyncStatus = 'CONNECTED' | 'SYNCING' | 'PARTIAL' | 'OFFLINE';
 
@@ -346,20 +350,38 @@ interface CollegeDataContextType {
   // Analytical Helpers
   getStudentAttendanceSummary: (studentId: string) => {
     overallPercentage: number;
+    regularPercentage: number;
+    consolidatedPercentage: number;
     totalConducted: number;
     totalPresent: number;
     totalOd: number;
     totalMedicalLeave: number;
     totalAbsent: number;
+    specialDutyApprovedCount: number;
+    specialDutyPendingCount: number;
+    consolidatedTotalAttended: number;
     isShortage: boolean;
     isWarning: boolean;
     courses: CourseAttendanceSummary[];
+    studentSpecialEvents?: Array<{
+      id: string;
+      title: string;
+      eventType: SpecialAttendanceEventType;
+      eventDate: string;
+      isFullDay: boolean;
+      dutyCertificateRef?: string;
+      reason: string;
+      status: SpecialAttendanceStatus;
+      periodsCount: number;
+      forwardedByHodName?: string;
+      approvedByName?: string;
+      principalRemarks?: string;
+    }>;
   };
 
   getCourseGroupRegisteredStudents: (courseGroupId: string) => (Student & { registrationCategory: CourseCategory | undefined })[];
   getPendingAttendanceSessions: (facultyId?: string, departmentId?: string) => ClassSession[];
-  exportAttendanceReportToCsv: (filename?: string) => void;
-  resetToDefaultData: () => void;
+  resetToDefaultData: (wipeSupabaseTestData?: boolean) => Promise<void> | void;
 }
 
 const CollegeDataContext = createContext<CollegeDataContextType | undefined>(undefined);
@@ -397,9 +419,19 @@ export const saveFacultyCredentialOverride = (id: string, username?: string, pas
 
 // Purge legacy demo / fake data from localStorage so the app starts with real data only
 if (typeof window !== 'undefined') {
-  const cleanupKey = `${STORAGE_PREFIX}real_data_purged_v4`;
+  const cleanupKey = `${STORAGE_PREFIX}clean_production_purged_v12_nodemo`;
   if (localStorage.getItem(cleanupKey) !== 'true') {
     const keysToPurge = [
+      `${STORAGE_PREFIX}students`,
+      `${STORAGE_PREFIX}faculty`,
+      `${STORAGE_PREFIX}faculty_credentials`,
+      `${STORAGE_PREFIX}faculty_override_creds`,
+      `${STORAGE_PREFIX}courses`,
+      `${STORAGE_PREFIX}course_offerings`,
+      `${STORAGE_PREFIX}course_groups`,
+      `${STORAGE_PREFIX}semester_enrollments`,
+      `${STORAGE_PREFIX}student_course_registrations`,
+      `${STORAGE_PREFIX}faculty_assignments`,
       `${STORAGE_PREFIX}timetable_entries`,
       `${STORAGE_PREFIX}class_sessions`,
       `${STORAGE_PREFIX}attendance_records`,
@@ -407,18 +439,41 @@ if (typeof window !== 'undefined') {
       `${STORAGE_PREFIX}substitute_assignments`,
       `${STORAGE_PREFIX}announcements`,
       `${STORAGE_PREFIX}notifications`,
+      `${STORAGE_PREFIX}audit_logs`,
       `${STORAGE_PREFIX}special_attendance_events`,
       `${STORAGE_PREFIX}special_attendance_records`,
+      `${STORAGE_PREFIX}daily_schedule_overrides`,
+      `${STORAGE_PREFIX}class_tutor_assignments`,
+      `${STORAGE_PREFIX}faculty_subject_requests`,
+      `${STORAGE_PREFIX}faculty_assignment_history`,
       `${STORAGE_PREFIX}circulars`,
       `${STORAGE_PREFIX}leave_requests`,
       `${STORAGE_PREFIX}certificate_requests`,
       `${STORAGE_PREFIX}academic_events`,
       `${STORAGE_PREFIX}academic_resources`,
       `${STORAGE_PREFIX}emergency_alerts`,
-      `${STORAGE_PREFIX}timetable_change_alerts`
+      `${STORAGE_PREFIX}timetable_change_alerts`,
+      `${STORAGE_PREFIX}bus_concession_records_v1`,
+      `${STORAGE_PREFIX}bus_concession_real_records_v2`,
+      'nss_announcements_cache',
+      'nss_circulars_cache',
+      'nss_timetable_state',
+      'nss_special_events_cache',
+      'nss_bus_concession_records_v1',
+      'nss_bus_concession_real_records_v2',
+      'nss_college_push_notifications_v1',
+      'nss_college_push_read_ids_v1',
+      'nss_erp_faculty_credentials'
     ];
     keysToPurge.forEach(k => localStorage.removeItem(k));
     localStorage.setItem(cleanupKey, 'true');
+
+    try {
+      firebaseSyncService.deleteSpecialAttendanceEvent('spec-event-union-pending').catch(() => {});
+      firebaseSyncService.deleteSpecialAttendanceEvent('spec-event-union-approved').catch(() => {});
+    } catch (e) {
+      // ignore
+    }
   }
 }
 
@@ -857,10 +912,12 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.courses = 'error';
           errorCount++;
         } else if (crsRes.value.data && crsRes.value.data.length > 0) {
-          setCourses(crsRes.value.data);
+          const cleanCourses = crsRes.value.data.filter(c => !c.id.includes('demo') && !c.id.includes('sample'));
+          setCourses(cleanCourses);
           health.courses = 'ok';
           successCount++;
         } else {
+          setCourses([]);
           health.courses = 'empty';
           successCount++;
         }
@@ -897,6 +954,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.courseOfferings = 'ok';
           successCount++;
         } else {
+          setCourseOfferings([]);
           health.courseOfferings = 'empty';
           successCount++;
         }
@@ -915,6 +973,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.courseGroups = 'ok';
           successCount++;
         } else {
+          setCourseGroups([]);
           health.courseGroups = 'empty';
           successCount++;
         }
@@ -929,10 +988,12 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.students = 'error';
           errorCount++;
         } else if (stuRes.value.data && stuRes.value.data.length > 0) {
-          setStudents(stuRes.value.data);
+          const cleanStudents = stuRes.value.data.filter(s => !s.id.includes('demo') && !s.id.includes('sample'));
+          setStudents(cleanStudents);
           health.students = 'ok';
           successCount++;
         } else {
+          setStudents([]);
           health.students = 'empty';
           successCount++;
         }
@@ -947,7 +1008,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.faculty = 'error';
           errorCount++;
         } else if (facRes.value.data && facRes.value.data.length > 0) {
-          const remoteFaculty = facRes.value.data;
+          const remoteFaculty = facRes.value.data.filter(f => !f.id.includes('demo') && !f.id.includes('sample'));
           const creds = getFacultyCredentialOverrides();
           setFaculty(prevLocal => {
             const merged = remoteFaculty.map(rf => {
@@ -975,14 +1036,15 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
               };
             });
 
-            // Preserve any locally added faculty members that are not yet in remote
+            // Preserve any non-demo locally added faculty members that are not yet in remote
             const remoteIds = new Set(remoteFaculty.map(rf => rf.id));
-            const localOnly = prevLocal.filter(l => !remoteIds.has(l.id));
+            const localOnly = prevLocal.filter(l => !remoteIds.has(l.id) && !l.id.includes('demo') && !l.id.includes('sample'));
             return [...merged, ...localOnly];
           });
           health.faculty = 'ok';
           successCount++;
         } else {
+          setFaculty(prev => prev.filter(f => !f.id.includes('demo') && !f.id.includes('sample')));
           health.faculty = 'empty';
           successCount++;
         }
@@ -1001,6 +1063,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.facultyAssignments = 'ok';
           successCount++;
         } else {
+          setFacultyAssignments([]);
           health.facultyAssignments = 'empty';
           successCount++;
         }
@@ -1037,6 +1100,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.timetableEntries = 'ok';
           successCount++;
         } else {
+          setTimetableEntries([]);
           health.timetableEntries = 'empty';
           successCount++;
         }
@@ -1055,6 +1119,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.classSessions = 'ok';
           successCount++;
         } else {
+          setClassSessions([]);
           health.classSessions = 'empty';
           successCount++;
         }
@@ -1073,6 +1138,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.attendanceRecords = 'ok';
           successCount++;
         } else {
+          setAttendanceRecords([]);
           health.attendanceRecords = 'empty';
           successCount++;
         }
@@ -1091,6 +1157,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.correctionRequests = 'ok';
           successCount++;
         } else {
+          setCorrectionRequests([]);
           health.correctionRequests = 'empty';
           successCount++;
         }
@@ -1109,6 +1176,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.studentRegistrations = 'ok';
           successCount++;
         } else {
+          setStudentCourseRegistrations([]);
           health.studentRegistrations = 'empty';
           successCount++;
         }
@@ -1127,6 +1195,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.semesterEnrollments = 'ok';
           successCount++;
         } else {
+          setSemesterEnrollments([]);
           health.semesterEnrollments = 'empty';
           successCount++;
         }
@@ -1141,10 +1210,12 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.announcements = 'error';
           errorCount++;
         } else if (annRes.value.data && annRes.value.data.length > 0) {
-          setAnnouncements(annRes.value.data);
+          const cleanAnn = annRes.value.data.filter(a => !a.id.includes('demo') && !a.id.includes('sample'));
+          setAnnouncements(cleanAnn);
           health.announcements = 'ok';
           successCount++;
         } else {
+          setAnnouncements([]);
           health.announcements = 'empty';
           successCount++;
         }
@@ -1163,6 +1234,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.auditLogs = 'ok';
           successCount++;
         } else {
+          setAuditLogs([]);
           health.auditLogs = 'empty';
           successCount++;
         }
@@ -1192,10 +1264,12 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.specialAttendance = 'error';
           errorCount++;
         } else if (specialEventsRes.value.data && specialEventsRes.value.data.length > 0) {
-          setSpecialAttendanceEvents(specialEventsRes.value.data);
+          const cleanEvents = specialEventsRes.value.data.filter(e => !e.id.includes('demo') && !e.id.includes('sample') && !e.id.startsWith('spec-event-union-'));
+          setSpecialAttendanceEvents(cleanEvents);
           health.specialAttendance = 'ok';
           successCount++;
         } else {
+          setSpecialAttendanceEvents([]);
           health.specialAttendance = 'empty';
           successCount++;
         }
@@ -1207,12 +1281,16 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (specialRecordsRes.status === 'fulfilled' && !specialRecordsRes.value.error && specialRecordsRes.value.data) {
         if (specialRecordsRes.value.data.length > 0) {
           setSpecialAttendanceRecords(specialRecordsRes.value.data);
+        } else {
+          setSpecialAttendanceRecords([]);
         }
       }
 
       if (overridesRes.status === 'fulfilled' && !overridesRes.value.error && overridesRes.value.data) {
         if (overridesRes.value.data.length > 0) {
           setDailyScheduleOverrides(overridesRes.value.data);
+        } else {
+          setDailyScheduleOverrides([]);
         }
       }
 
@@ -1245,6 +1323,33 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   useEffect(() => {
     syncWithDatabase();
+
+    // Real-time synchronization with Firebase Firestore
+    const unsubAnnouncements = firebaseSyncService.subscribeAnnouncements((remoteAnnouncements) => {
+      if (remoteAnnouncements && remoteAnnouncements.length > 0) {
+        setAnnouncements(prev => {
+          const map = new Map(prev.map(a => [a.id, a]));
+          remoteAnnouncements.forEach(ra => map.set(ra.id, ra));
+          return Array.from(map.values());
+        });
+      }
+    });
+
+    const unsubSpecial = firebaseSyncService.subscribeSpecialEvents((remoteEvents) => {
+      if (remoteEvents && remoteEvents.length > 0) {
+        const validEvents = remoteEvents.filter(e => !e.id.startsWith('spec-event-union-'));
+        setSpecialAttendanceEvents(prev => {
+          const map = new Map(prev.filter(e => !e.id.startsWith('spec-event-union-')).map(e => [e.id, e]));
+          validEvents.forEach(re => map.set(re.id, re));
+          return Array.from(map.values());
+        });
+      }
+    });
+
+    return () => {
+      unsubAnnouncements();
+      unsubSpecial();
+    };
   }, []);
 
   // Logging helper
@@ -1815,11 +1920,11 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       id: `notif-${Date.now()}`,
       userId: dept?.hodFacultyId || 'hod',
       title: 'New Subject Registration Request',
-      message: `${teacherName} submitted a subject registration request for "${req.courseName}" (${req.courseType}).`,
-      type: 'ACADEMIC',
+      body: `${teacherName} submitted a subject registration request for "${req.courseName}" (${req.courseType}).`,
+      type: 'SUBJECT_REQUEST',
       isRead: false,
       createdAt: now,
-      actionUrl: '/dashboard'
+      link: '/dashboard'
     };
     setNotifications(prev => [notif, ...prev]);
 
@@ -2013,11 +2118,11 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       id: `notif-${Date.now()}`,
       userId: existingReq.requestedByFacultyId || existingReq.requestedBy,
       title: `Subject Request ${statusText}`,
-      message: `Your request for "${existingReq.courseName}" has been ${statusText.toLowerCase()}.${reviewNotes ? ` Note: ${reviewNotes}` : ''}`,
-      type: 'ACADEMIC',
+      body: `Your request for "${existingReq.courseName}" has been ${statusText.toLowerCase()}.${reviewNotes ? ` Note: ${reviewNotes}` : ''}`,
+      type: status === 'APPROVED' ? 'SUBJECT_APPROVAL' : status === 'REJECTED' ? 'SUBJECT_REJECTION' : 'SYSTEM',
       isRead: false,
       createdAt: now,
-      actionUrl: '/dashboard'
+      link: '/dashboard'
     };
     setNotifications(prev => [notif, ...prev]);
 
@@ -2137,8 +2242,8 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       id: `notif-${Date.now()}-1`,
       userId: currentFacultyId,
       title: 'Teaching Assignment Concluded',
-      message: `Your assignment for ${grpName} has ended effective ${effectiveDate}. Reason: ${reason}. Historical attendance is fully preserved.`,
-      type: 'ACADEMIC',
+      body: `Your assignment for ${grpName} has ended effective ${effectiveDate}. Reason: ${reason}. Historical attendance is fully preserved.`,
+      type: 'FACULTY_REASSIGNMENT',
       isRead: false,
       createdAt: now
     };
@@ -2147,8 +2252,8 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       id: `notif-${Date.now()}-2`,
       userId: newFacultyId,
       title: 'New Teaching Assignment Allocated',
-      message: `You have been allocated to teach ${grpName} effective from ${effectiveDate}. Reason: ${reason}.`,
-      type: 'ACADEMIC',
+      body: `You have been allocated to teach ${grpName} effective from ${effectiveDate}. Reason: ${reason}.`,
+      type: 'FACULTY_REASSIGNMENT',
       isRead: false,
       createdAt: now
     };
@@ -2246,7 +2351,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       departmentId: teacherData.departmentId,
       designation: teacherData.designation.trim() || 'Assistant Professor',
       roles: teacherData.roles && teacherData.roles.length > 0 ? teacherData.roles : ['TEACHER'],
-      status: teacherData.status || 'ACTIVE',
+      status: teacherData.status === 'INACTIVE' ? 'ON_LEAVE' : 'ACTIVE',
       isActive: teacherData.status !== 'INACTIVE',
       mustChangePassword: true,
       isInvited: true,
@@ -3094,6 +3199,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           );
 
           let conflictStatus: SpecialAttendanceRecord['normalSessionConflictStatus'] = 'NO_SESSION';
+          let originalStatus: SpecialAttendanceRecord['originalTeacherStatus'] = 'NO_SESSION';
           if (normalSession) {
             if (normalSession.status === 'CANCELLED') {
               conflictStatus = 'SESSION_CANCELLED';
@@ -3102,13 +3208,19 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
                 r => r.classSessionId === normalSession.id && r.studentId === stu.id
               );
               if (existingRecord) {
-                if (existingRecord.status === 'PRESENT' || existingRecord.status === 'OD') {
+                if (existingRecord.status === 'PRESENT') {
                   conflictStatus = 'NORMAL_PRESENT';
+                  originalStatus = 'PRESENT';
+                } else if (existingRecord.status === 'OD') {
+                  conflictStatus = 'NORMAL_PRESENT';
+                  originalStatus = 'OD';
                 } else if (existingRecord.status === 'ABSENT') {
                   conflictStatus = 'OVERRIDDEN';
+                  originalStatus = 'ABSENT'; // Teacher marked student as absent!
                 }
               } else {
                 conflictStatus = 'NO_SESSION';
+                originalStatus = 'ABSENT';
               }
             }
           }
@@ -3121,15 +3233,32 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
             attendanceStatus: 'SPECIAL',
             attendanceSource: 'SPECIAL',
             normalSessionConflictStatus: conflictStatus,
+            originalTeacherStatus: originalStatus,
             remarks: eventData.reason
           });
         });
       });
 
-      // 5. Persist to Supabase via service
-      const res = await specialAttendanceService.createEventWithRecords(eventData, generatedRecords);
-      const newEvent: SpecialAttendanceEvent = res.data?.event || {
+      // Status determination:
+      // If entered by HOD (or Teacher/Staff), default status is PENDING_PRINCIPAL (forwarded to Principal)
+      const isPrincipalAdmin = user?.activeRole === 'PRINCIPAL' || user?.activeRole === 'SUPER_ADMIN';
+      const determinedStatus: SpecialAttendanceStatus = eventData.status || (isPrincipalAdmin ? 'APPROVED' : 'PENDING_PRINCIPAL');
+
+      const fullEventData = {
         ...eventData,
+        status: determinedStatus,
+        forwardedByHodId: !isPrincipalAdmin ? (user?.id || null) : (eventData.forwardedByHodId || null),
+        forwardedByHodName: !isPrincipalAdmin ? (user?.name || 'Department HOD') : (eventData.forwardedByHodName || null),
+        forwardedAt: !isPrincipalAdmin ? timestamp : (eventData.forwardedAt || null),
+        approvedBy: isPrincipalAdmin && determinedStatus === 'APPROVED' ? user?.id : (eventData.approvedBy || null),
+        approvedByName: isPrincipalAdmin && determinedStatus === 'APPROVED' ? user?.name : (eventData.approvedByName || null),
+        principalActionAt: isPrincipalAdmin && determinedStatus === 'APPROVED' ? timestamp : null
+      };
+
+      // 5. Persist to Supabase via service
+      const res = await specialAttendanceService.createEventWithRecords(fullEventData, generatedRecords);
+      const newEvent: SpecialAttendanceEvent = res.data?.event || {
+        ...fullEventData,
         id: `spec-event-${Date.now()}`,
         createdAt: timestamp,
         updatedAt: timestamp
@@ -3145,26 +3274,46 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setSpecialAttendanceEvents(prev => [newEvent, ...prev]);
       setSpecialAttendanceRecords(prev => [...newRecords, ...prev]);
 
+      // Real-time synchronization to Firebase Firestore
+      firebaseSyncService.syncSpecialAttendanceEvent(newEvent).catch(err => {
+        console.warn('Firebase special attendance sync notice (handled):', err);
+      });
+
       addAuditLog('CREATE_SPECIAL_ATTENDANCE', 'SPECIAL_ATTENDANCE_EVENT', newEvent.id, {
         title: newEvent.title,
         scopeType: newEvent.scopeType,
         eventDate: newEvent.eventDate,
+        status: newEvent.status,
         periodsCount: targetPeriodIds.length,
         studentsCount: eligibleStudents.length
       });
 
-      // Notify relevant users
-      const newNotif: AppNotification = {
-        id: `notif-${Date.now()}`,
-        targetRole: eventData.scopeType === 'COLLEGE' ? 'PRINCIPAL' : 'HOD',
-        title: `Special Attendance: ${newEvent.title}`,
-        body: `Special attendance granted for ${newEvent.eventDate} (${newEvent.scopeType}) to ${eligibleStudents.length} students.`,
-        type: 'SYSTEM',
-        isRead: false,
-        link: '/special-attendance',
-        createdAt: timestamp
-      };
-      setNotifications(prev => [newNotif, ...prev]);
+      // Dispatch appropriate notifications
+      if (newEvent.status === 'PENDING_PRINCIPAL') {
+        const principalNotif: AppNotification = {
+          id: `notif-${Date.now()}`,
+          targetRole: 'PRINCIPAL',
+          title: `Special Attendance Approval Needed: ${newEvent.title}`,
+          body: `HOD ${user?.name || 'Department'} forwarded union/special duty attendance for ${eligibleStudents.length} student(s) on ${newEvent.eventDate}. Awaiting your sanction.`,
+          type: 'SYSTEM',
+          isRead: false,
+          link: '/special-attendance',
+          createdAt: timestamp
+        };
+        setNotifications(prev => [principalNotif, ...prev]);
+      } else {
+        const newNotif: AppNotification = {
+          id: `notif-${Date.now()}`,
+          targetRole: eventData.scopeType === 'COLLEGE' ? 'PRINCIPAL' : 'HOD',
+          title: `Special Attendance: ${newEvent.title}`,
+          body: `Special attendance granted for ${newEvent.eventDate} (${newEvent.scopeType}) to ${eligibleStudents.length} students.`,
+          type: 'SYSTEM',
+          isRead: false,
+          link: '/special-attendance',
+          createdAt: timestamp
+        };
+        setNotifications(prev => [newNotif, ...prev]);
+      }
 
       return { success: true, data: newEvent };
     } catch (err: any) {
@@ -3183,15 +3332,64 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
         id,
         status,
         user?.id,
-        user?.name
+        user?.name,
+        remarks
       );
       if (!res.success) {
         return { success: false, error: res.error?.message || 'Failed to update special attendance status.' };
       }
 
+      const timestamp = new Date().toISOString();
+      const isApproved = status === 'APPROVED';
+      const isRejected = status === 'REJECTED';
+
       setSpecialAttendanceEvents(prev =>
-        prev.map(e => (e.id === id ? { ...e, status, updatedAt: new Date().toISOString() } : e))
+        prev.map(e =>
+          e.id === id
+            ? {
+                ...e,
+                status,
+                principalRemarks: remarks !== undefined ? remarks : e.principalRemarks,
+                approvedBy: isApproved ? (user?.id || e.approvedBy) : e.approvedBy,
+                approvedByName: isApproved ? (user?.name || e.approvedByName) : e.approvedByName,
+                principalActionAt: isApproved || isRejected ? timestamp : e.principalActionAt,
+                updatedAt: timestamp
+              }
+            : e
+        )
       );
+
+      // Real-time synchronization to Firebase Firestore
+      firebaseSyncService.updateSpecialAttendanceStatus(
+        id,
+        status,
+        remarks,
+        user?.id,
+        user?.name
+      ).catch(err => {
+        console.warn('Firebase status sync notice (handled):', err);
+      });
+
+      const targetEvent = specialAttendanceEvents.find(e => e.id === id);
+
+      // Notify HOD when Principal acts
+      if (isApproved || isRejected) {
+        const notifMsg = isApproved
+          ? `Principal ${user?.name || ''} approved special duty attendance for "${targetEvent?.title || 'Event'}". Consolidated into student attendance.`
+          : `Principal returned special duty attendance for "${targetEvent?.title || 'Event'}". Remarks: ${remarks || 'Review required'}`;
+
+        const decisionNotif: AppNotification = {
+          id: `notif-dec-${Date.now()}`,
+          targetRole: 'HOD',
+          title: isApproved ? 'Special Attendance Approved by Principal' : 'Special Attendance Returned by Principal',
+          body: notifMsg,
+          type: 'SYSTEM',
+          isRead: false,
+          link: '/special-attendance',
+          createdAt: timestamp
+        };
+        setNotifications(prev => [decisionNotif, ...prev]);
+      }
 
       addAuditLog('UPDATE_SPECIAL_ATTENDANCE_STATUS', 'SPECIAL_ATTENDANCE_EVENT', id, { status, remarks });
       return { success: true };
@@ -3226,6 +3424,12 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const created = res.data;
     setAnnouncements(prev => [created, ...prev]);
     addAuditLog('CREATE_ANNOUNCEMENT', 'ANNOUNCEMENT', created.id, created);
+
+    // Sync to Firebase for real-time notice delivery
+    firebaseSyncService.syncAnnouncement(created).catch(err => {
+      console.warn('Firebase announcement sync notice (handled):', err);
+    });
+
     return { success: true, data: created };
   };
 
@@ -3236,6 +3440,12 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
     setAnnouncements(prev => prev.filter(a => a.id !== id));
     addAuditLog('DELETE_ANNOUNCEMENT', 'ANNOUNCEMENT', id);
+
+    // Delete from Firebase Firestore
+    firebaseSyncService.deleteAnnouncement(id).catch(err => {
+      console.warn('Firebase announcement delete notice (handled):', err);
+    });
+
     return { success: true };
   };
 
@@ -3255,11 +3465,34 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     // Find all course registrations for this student
     const studentRegistrations = studentCourseRegistrations.filter(r => r.studentId === studentId);
 
+    // Identify student's special attendance events & approval status
+    const studentSpecialRecords = specialAttendanceRecords.filter(s => s.studentId === studentId);
+    const approvedEventIds = new Set(
+      specialAttendanceEvents
+        .filter(e => e.status === 'APPROVED' || e.status === 'APPLIED')
+        .map(e => e.id)
+    );
+    const pendingEventIds = new Set(
+      specialAttendanceEvents
+        .filter(e => e.status === 'PENDING_PRINCIPAL' || e.status === 'FORWARDED_TO_PRINCIPAL')
+        .map(e => e.id)
+    );
+
     let totalConducted = 0;
     let totalPresent = 0;
+    let totalRegularPresent = 0;
+    let totalSpecialDutyApproved = 0;
+    let totalSpecialDutyPending = 0;
     let totalOd = 0;
     let totalMedicalLeave = 0;
     let totalAbsent = 0;
+
+    // Count pending special records for this student
+    studentSpecialRecords.forEach(sr => {
+      if (pendingEventIds.has(sr.eventId)) {
+        totalSpecialDutyPending++;
+      }
+    });
 
     const coursesSummary: CourseAttendanceSummary[] = studentRegistrations.map(reg => {
       const offering = courseOfferings.find(o => o.id === reg.courseOfferingId);
@@ -3277,6 +3510,8 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       // Total conducted sessions for this course group
       const courseConducted = sessions.length;
       let coursePresent = 0;
+      let courseRegularPresent = 0;
+      let courseSpecialDutyPresent = 0;
       let courseOd = 0;
       let courseML = 0;
       let courseAbsent = 0;
@@ -3285,39 +3520,50 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
         const att = attendanceRecords.find(
           a => a.classSessionId === sess.id && a.studentId === studentId
         );
-        const specialRec = specialAttendanceRecords.find(
-          s => s.studentId === studentId && s.date === sess.date && s.periodId === sess.periodId
+        // Check if an APPROVED special attendance record exists for this date and period
+        const specialRec = studentSpecialRecords.find(
+          s => s.date === sess.date && s.periodId === sess.periodId && approvedEventIds.has(s.eventId)
         );
 
         if (specialRec) {
-          // Special attendance applied for this date and period!
+          // Special institutional attendance approved by Principal!
           if (att && (att.status === 'PRESENT' || att.status === 'OD')) {
-            if (att.status === 'PRESENT') coursePresent++;
-            else courseOd++;
+            if (att.status === 'PRESENT') {
+              courseRegularPresent++;
+              coursePresent++;
+            } else {
+              courseOd++;
+            }
           } else {
-            // Overrides absent / unmarked session as authorized institutional attendance
-            coursePresent++;
+            // Overrides absent / unmarked session as authorized institutional special attendance
+            courseSpecialDutyPresent++;
+            coursePresent++; // consolidated into effective present
           }
         } else if (att) {
-          if (att.status === 'PRESENT') coursePresent++;
+          if (att.status === 'PRESENT') {
+            courseRegularPresent++;
+            coursePresent++;
+          }
           else if (att.status === 'OD') courseOd++;
           else if (att.status === 'MEDICAL_LEAVE') courseML++;
           else if (att.status === 'ABSENT') courseAbsent++;
-          else if (att.status === 'APPROVED_LEAVE') coursePresent++; // institutional benefit
+          else if (att.status === 'APPROVED_LEAVE') {
+            courseRegularPresent++;
+            coursePresent++;
+          }
         } else {
           // If session was conducted but no record marked, counted as absent
           courseAbsent++;
         }
       });
 
-      // Account for timetable periods covered by special attendance where NO normal session was conducted
+      // Account for timetable periods covered by APPROVED special attendance where NO normal session was conducted
       const groupTimetable = timetableEntries.filter(te => te.courseGroupId === reg.courseGroupId);
-      const studentSpecialRecords = specialAttendanceRecords.filter(s => s.studentId === studentId);
 
       let specialConducted = 0;
       let specialPresent = 0;
 
-      studentSpecialRecords.forEach(sr => {
+      studentSpecialRecords.filter(sr => approvedEventIds.has(sr.eventId)).forEach(sr => {
         const alreadyCountedInSession = sessions.some(s => s.date === sr.date && s.periodId === sr.periodId);
         if (!alreadyCountedInSession) {
           const eventDateObj = new Date(sr.date + 'T00:00:00Z');
@@ -3332,12 +3578,17 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           if (isScheduledForThisGroup) {
             specialConducted++;
             specialPresent++;
+            courseSpecialDutyPresent++;
           }
         }
       });
 
       const effectiveCourseConducted = courseConducted + specialConducted;
       const effectiveCoursePresent = coursePresent + specialPresent;
+
+      // Regular academic percentage vs Consolidated percentage
+      const regularAttended = courseRegularPresent + courseOd + (settings.enableOdAutomation ? courseML : 0);
+      const regularPct = effectiveCourseConducted > 0 ? Number(((regularAttended / effectiveCourseConducted) * 100).toFixed(2)) : 100;
 
       // Total effective attendance count = Present + OD + (ML if enabled)
       const effectiveAttended = effectiveCoursePresent + courseOd + (settings.enableOdAutomation ? courseML : 0);
@@ -3347,20 +3598,15 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const isWarning = percentage < settings.warningAttendancePercentage && !isShortage;
 
       // Attendance Calculator:
-      // Minimum needed = ceil((minPercent * conducted - attended) / (1 - minPercent))
       const targetRatio = settings.minAttendancePercentage / 100;
       let classesNeededForMin = 0;
       let classesCanMiss = 0;
 
       if (effectiveCourseConducted > 0) {
         if (percentage < settings.minAttendancePercentage) {
-          // calculate future classes needed: (effectiveAttended + x) / (courseConducted + x) >= targetRatio
-          // x >= (targetRatio * courseConducted - effectiveAttended) / (1 - targetRatio)
           const needed = Math.ceil((targetRatio * effectiveCourseConducted - effectiveAttended) / (1 - targetRatio));
           classesNeededForMin = Math.max(0, needed);
         } else {
-          // calculate how many classes can miss: effectiveAttended / (courseConducted + y) >= targetRatio
-          // effectiveAttended / targetRatio - courseConducted >= y
           const canMiss = Math.floor(effectiveAttended / targetRatio - effectiveCourseConducted);
           classesCanMiss = Math.max(0, canMiss);
         }
@@ -3368,6 +3614,8 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
       totalConducted += effectiveCourseConducted;
       totalPresent += effectiveCoursePresent;
+      totalRegularPresent += courseRegularPresent;
+      totalSpecialDutyApproved += courseSpecialDutyPresent;
       totalOd += courseOd;
       totalMedicalLeave += courseML;
       totalAbsent += courseAbsent;
@@ -3390,6 +3638,9 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
         medicalLeaveCount: courseML,
         absentCount: courseAbsent,
         percentage,
+        regularPercentage: regularPct,
+        consolidatedPercentage: percentage,
+        specialDutyCount: courseSpecialDutyPresent,
         isShortage,
         isWarning,
         classesNeededForMin,
@@ -3399,17 +3650,70 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     const totalEffectiveAttended = totalPresent + totalOd + (settings.enableOdAutomation ? totalMedicalLeave : 0);
     const overallPercentage = totalConducted > 0 ? Number(((totalEffectiveAttended / totalConducted) * 100).toFixed(2)) : 100;
+    const regularAttendedAll = totalRegularPresent + totalOd + (settings.enableOdAutomation ? totalMedicalLeave : 0);
+    const regularPercentage = totalConducted > 0 ? Number(((regularAttendedAll / totalConducted) * 100).toFixed(2)) : 100;
+
+    // Collect student's special attendance events with details
+    const studentEventsMap = new Map<string, { event: SpecialAttendanceEvent; count: number }>();
+    studentSpecialRecords.forEach(sr => {
+      const ev = specialAttendanceEvents.find(e => e.id === sr.eventId);
+      if (ev) {
+        if (!studentEventsMap.has(ev.id)) {
+          studentEventsMap.set(ev.id, { event: ev, count: 1 });
+        } else {
+          studentEventsMap.get(ev.id)!.count++;
+        }
+      }
+    });
+
+    const studentSpecialEventsList = Array.from(studentEventsMap.values()).map(({ event, count }) => ({
+      id: event.id,
+      title: event.title,
+      eventType: event.eventType,
+      eventDate: event.eventDate,
+      isFullDay: event.isFullDay,
+      dutyCertificateRef: event.dutyCertificateRef,
+      reason: event.reason,
+      status: event.status,
+      periodsCount: count,
+      forwardedByHodName: event.forwardedByHodName,
+      approvedByName: event.approvedByName,
+      principalRemarks: event.principalRemarks
+    }));
+
+    // Keep Firebase lightweight student ledger warm for ultra-low read quota usage on free plans
+    const targetStudent = students.find(s => s.id === studentId);
+    if (targetStudent) {
+      firebaseSyncService.syncStudentAttendanceSummary({
+        studentId,
+        rollNumber: targetStudent.rollNumber,
+        admissionNumber: targetStudent.admissionNumber,
+        fullName: targetStudent.fullName,
+        regularPercentage,
+        consolidatedPercentage: overallPercentage,
+        totalConducted,
+        totalPresent: totalRegularPresent,
+        specialDutyApprovedCount: totalSpecialDutyApproved,
+        specialDutyPendingCount: totalSpecialDutyPending
+      }).catch(() => {});
+    }
 
     return {
       overallPercentage,
+      regularPercentage,
+      consolidatedPercentage: overallPercentage,
       totalConducted,
-      totalPresent,
+      totalPresent: totalRegularPresent,
       totalOd,
       totalMedicalLeave,
       totalAbsent,
+      specialDutyApprovedCount: totalSpecialDutyApproved,
+      specialDutyPendingCount: totalSpecialDutyPending,
+      consolidatedTotalAttended: totalEffectiveAttended,
       isShortage: overallPercentage < settings.minAttendancePercentage,
       isWarning: overallPercentage < settings.warningAttendancePercentage && overallPercentage >= settings.minAttendancePercentage,
-      courses: coursesSummary
+      courses: coursesSummary,
+      studentSpecialEvents: studentSpecialEventsList
     };
   };
 
@@ -3522,8 +3826,22 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     document.body.removeChild(link);
   };
 
-  const resetToDefaultData = () => {
-    localStorage.clear();
+  const resetToDefaultData = async (wipeSupabaseTestData = false) => {
+    // 1. Wipe all local storage keys completely
+    try {
+      localStorage.clear();
+    } catch (e) {
+      console.warn('Could not clear localStorage:', e);
+    }
+
+    // 2. Clear push notifications in-memory & in storage
+    try {
+      pushNotificationService.clearAllNotifications();
+    } catch (e) {
+      console.warn('Could not clear push notifications:', e);
+    }
+
+    // 3. Reset all React state to pristine initial empty states
     setSettings(initialSystemSettings);
     setDepartments(initialDepartments);
     setProgrammes(initialProgrammes);
@@ -3547,7 +3865,30 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setAuditLogs(initialAuditLogs);
     setSpecialAttendanceEvents(initialSpecialAttendanceEvents);
     setSpecialAttendanceRecords(initialSpecialAttendanceRecords);
-    alert('System data reset to default NSS College Ottapalam database state.');
+    setClassTutorAssignments(initialClassTutorAssignments);
+    setFacultySubjectRequests(initialFacultySubjectRequests);
+    setFacultyAssignmentHistory(initialFacultyAssignmentHistory);
+    setDailyScheduleOverrides(initialDailyScheduleOverrides);
+
+    // 4. If requested, also attempt to purge test attendance records & sessions from Supabase
+    if (wipeSupabaseTestData) {
+      try {
+        await Promise.allSettled([
+          supabase.from('attendance_records').delete().neq('id', '00000000-0000-0000-0000-000000000000'),
+          supabase.from('attendance_correction_requests').delete().neq('id', '00000000-0000-0000-0000-000000000000'),
+          supabase.from('class_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000'),
+          supabase.from('special_attendance_records').delete().neq('id', '00000000-0000-0000-0000-000000000000'),
+          supabase.from('special_attendance_events').delete().neq('id', '00000000-0000-0000-0000-000000000000'),
+          supabase.from('student_leave_requests').delete().neq('id', '00000000-0000-0000-0000-000000000000'),
+          supabase.from('student_certificate_requests').delete().neq('id', '00000000-0000-0000-0000-000000000000'),
+          supabase.from('daily_schedule_overrides').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+        ]);
+      } catch (err) {
+        console.warn('Supabase test data wipe notice (handled):', err);
+      }
+    }
+
+    console.info('System data reset to pristine state completed successfully.');
   };
 
   return (

@@ -72,7 +72,7 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
     {
       role: 'TEACHER',
       title: 'Teacher / Faculty',
-      userName: 'Prof. Anitha Radhakrishnan (Economics)',
+      userName: 'Faculty / Teacher Workspace',
       description: "Mark attendance for assigned FYUGP multi-disciplinary course groups, enter topics, request corrections.",
       icon: Briefcase,
       badge: 'Core Flow'
@@ -80,7 +80,7 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
     {
       role: 'STUDENT',
       title: 'FYUGP Student Portal',
-      userName: 'Aravind Venugopal (B.Com Sem 1)',
+      userName: 'Student Portal Workspace',
       description: "View subject-wise attendance, shortage indicators, interactive target calculator, and digital student ID.",
       icon: GraduationCap,
       badge: 'Student View'
@@ -88,7 +88,7 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
     {
       role: 'HOD',
       title: 'Head of Department (HOD)',
-      userName: 'Dr. Suresh Kumar P. (Commerce & Management)',
+      userName: 'Department Head Workspace',
       description: "Department attendance health, pending submissions, correction approval queue, substitute assignment.",
       icon: Building,
       badge: 'Dept Head'
@@ -96,7 +96,7 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
     {
       role: 'PRINCIPAL',
       title: 'Principal Portal',
-      userName: 'Dr. Harikrishnan Nair (Principal)',
+      userName: 'Principal Executive Office',
       description: "College-wide attendance metrics, cross-department comparison, shortage lists, institutional oversight.",
       icon: Shield,
       badge: 'Executive'
@@ -104,7 +104,7 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
     {
       role: 'SUPER_ADMIN',
       title: 'Super Administrator',
-      userName: 'Smt. Padmaja K. (Admin Head)',
+      userName: 'Super Administrator Workspace',
       description: "Full configuration: programmes, course categories, periods, thresholds, system settings, PostgreSQL schema export.",
       icon: Sparkles,
       badge: 'All Permissions'
@@ -112,7 +112,7 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
     {
       role: 'CLASS_TUTOR',
       title: 'Class Tutor',
-      userName: 'Dr. Meera Menon (History Batch Tutor)',
+      userName: 'Class Tutor Workspace',
       description: "Batch student attendance monitoring, shortage alerts, parent contact directory.",
       icon: Users,
       badge: 'Batch Mentor'
@@ -120,7 +120,7 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
     {
       role: 'COURSE_COORDINATOR',
       title: 'Course Coordinator',
-      userName: 'Prof. Anitha Radhakrishnan (FYUGP Coordinator)',
+      userName: 'Course Coordinator Workspace',
       description: "Manage multi-programme course offerings, group allocations, cross-department enrollment stats.",
       icon: Briefcase,
       badge: 'Course Head'
@@ -128,7 +128,7 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
     {
       role: 'ATTENDANCE_COORDINATOR',
       title: 'Attendance Coordinator',
-      userName: 'Dr. Rajesh Narayanan (College Committee)',
+      userName: 'Attendance Coordinator Workspace',
       description: "Supervise daily faculty submissions, institute-wide shortage reports, correction audits.",
       icon: Shield,
       badge: 'Oversight'
@@ -136,7 +136,7 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
     {
       role: 'OFFICE_STAFF',
       title: 'Office Staff / Admissions',
-      userName: 'Smt. Padmaja K. (Administrative Office)',
+      userName: 'Administrative Office Workspace',
       description: "Student master records, semester promotions, course registration batch operations.",
       icon: Users,
       badge: 'Administration'

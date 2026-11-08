@@ -3,6 +3,7 @@ import { useCollegeData } from '../../contexts/CollegeDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { can } from '../../config/permissions';
 import { Modal } from '../common/UIComponents';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 import { DayOfWeek, TimetableEntry, TimetablePeriod } from '../../types';
 import {
   Clock,
@@ -170,6 +171,7 @@ export const TimetableView: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [slotToDelete, setSlotToDelete] = useState<TimetableEntry | null>(null);
   const [pageMessage, setPageMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Helper function to match period IDs whether using friendly IDs or UUIDs
@@ -561,33 +563,30 @@ export const TimetableView: React.FC = () => {
   };
 
   // Delete timetable entry
-  const handleDeleteSlot = async (entry: TimetableEntry) => {
+  const handleDeleteSlotClick = (entry: TimetableEntry) => {
     if (!canDelete) return;
-    const offering = courseOfferings.find(o => o.id === entry.courseOfferingId);
-    const course = courses.find(c => c.id === offering?.courseId);
-    const period = timetablePeriods.find(p => isMatchingPeriod(entry.periodId, p));
+    setSlotToDelete(entry);
+  };
 
-    if (
-      confirm(
-        `Are you sure you want to remove the scheduled slot for "${course?.courseCode || 'this class'}" on ${entry.dayOfWeek || entry.weekday} (${period?.label || 'Period'})?`
-      )
-    ) {
-      setDeletingId(entry.id);
-      setPageMessage(null);
-      const res = await deleteTimetableEntry(entry.id);
-      setDeletingId(null);
-      if (!res.success) {
-        setPageMessage({
-          type: 'error',
-          text: res.error || 'Failed to remove timetable slot from database.'
-        });
-      } else {
-        setPageMessage({
-          type: 'success',
-          text: 'Timetable slot removed successfully.'
-        });
-        setTimeout(() => setPageMessage(null), 4000);
-      }
+  const handleConfirmDeleteSlot = async () => {
+    if (!slotToDelete) return;
+    const entry = slotToDelete;
+    setDeletingId(entry.id);
+    setPageMessage(null);
+    const res = await deleteTimetableEntry(entry.id);
+    setDeletingId(null);
+    setSlotToDelete(null);
+    if (!res.success) {
+      setPageMessage({
+        type: 'error',
+        text: res.error || 'Failed to remove timetable slot from database.'
+      });
+    } else {
+      setPageMessage({
+        type: 'success',
+        text: 'Timetable slot removed successfully.'
+      });
+      setTimeout(() => setPageMessage(null), 4000);
     }
   };
 
@@ -900,7 +899,7 @@ export const TimetableView: React.FC = () => {
                                             )}
                                             {canDelete && (
                                               <button
-                                                onClick={() => handleDeleteSlot(entry)}
+                                                onClick={() => handleDeleteSlotClick(entry)}
                                                 disabled={deletingId === entry.id}
                                                 className="p-1 rounded hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors disabled:opacity-50"
                                                 title="Delete Slot"
@@ -1103,7 +1102,7 @@ export const TimetableView: React.FC = () => {
                                   )}
                                   {canDelete && (
                                     <button
-                                      onClick={() => handleDeleteSlot(entry)}
+                                      onClick={() => handleDeleteSlotClick(entry)}
                                       disabled={deletingId === entry.id}
                                       className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors disabled:opacity-50"
                                       title="Delete Slot"
@@ -1543,6 +1542,32 @@ export const TimetableView: React.FC = () => {
           </form>
         </Modal>
       )}
+
+      {/* Confirm Delete Timetable Slot Modal */}
+      <ConfirmDialog
+        isOpen={!!slotToDelete}
+        onClose={() => setSlotToDelete(null)}
+        onConfirm={handleConfirmDeleteSlot}
+        isLoading={!!deletingId}
+        title="Remove Timetable Slot"
+        message={
+          <div>
+            <p>
+              Are you sure you want to remove the scheduled slot for{' '}
+              <strong className="text-slate-900">
+                {courses.find(c => c.id === courseOfferings.find(o => o.id === slotToDelete?.courseOfferingId)?.courseId)?.courseCode || 'this class'}
+              </strong>{' '}
+              on {slotToDelete?.dayOfWeek || slotToDelete?.weekday} (
+              {timetablePeriods.find(p => isMatchingPeriod(slotToDelete?.periodId || '', p))?.label || 'Period'})?
+            </p>
+            <p className="mt-2 text-rose-600 font-medium">
+              This will remove the slot from student and faculty timetables immediately.
+            </p>
+          </div>
+        }
+        confirmLabel="Yes, Remove Slot"
+        variant="danger"
+      />
     </div>
   );
 };

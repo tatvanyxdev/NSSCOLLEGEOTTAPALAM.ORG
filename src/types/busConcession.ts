@@ -66,115 +66,115 @@ export const SUBJECT_METADATA: Record<BusConcessionSubject, SubjectDepartmentInf
   'B.A. Economics': {
     departmentId: 'dept-eco',
     departmentName: 'Department of Economics',
-    hodName: 'Dr. S. Radhakrishnan',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.A. English': {
     departmentId: 'dept-eng',
     departmentName: 'Department of English',
-    hodName: 'Prof. Anitha Menon',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.A. Hindi': {
     departmentId: 'dept-hin',
     departmentName: 'Department of Hindi',
-    hodName: 'Dr. Manoj Kumar P',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.A. History': {
     departmentId: 'dept-his',
     departmentName: 'Department of History',
-    hodName: 'Dr. Girija K',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.A. Malayalam': {
     departmentId: 'dept-mal',
     departmentName: 'Department of Malayalam',
-    hodName: 'Dr. Unnikrishnan V',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.Com': {
     departmentId: 'dept-com',
     departmentName: 'Department of Commerce & Management',
-    hodName: 'Dr. K. Jayasree',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.Sc. Botany': {
     departmentId: 'dept-bot',
     departmentName: 'Department of Botany',
-    hodName: 'Dr. Bindu R',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.Sc. Maths': {
     departmentId: 'dept-mat',
     departmentName: 'Department of Mathematics',
-    hodName: 'Dr. Vinod P. R',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.Sc. Zoology': {
     departmentId: 'dept-zoo',
     departmentName: 'Department of Zoology',
-    hodName: 'Dr. Deepa S',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.Sc. Chemistry': {
     departmentId: 'dept-che',
     departmentName: 'Department of Chemistry',
-    hodName: 'Dr. Pradeep Kumar',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.Sc. Computer Science': {
     departmentId: 'dept-cs',
     departmentName: 'Department of Computer Science',
-    hodName: 'Dr. Sunitha Balan',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.Sc. Industrial Chemistry': {
     departmentId: 'dept-ic',
     departmentName: 'Department of Industrial Chemistry',
-    hodName: 'Dr. Rekha C. Nair',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'B.Sc. Physics': {
     departmentId: 'dept-phy',
     departmentName: 'Department of Physics',
-    hodName: 'Dr. Suresh Babu T',
+    hodName: 'Head of Department',
     defaultDuration: 'UG Four Year'
   },
   'M.A. Economics': {
     departmentId: 'dept-eco',
     departmentName: 'Department of Economics',
-    hodName: 'Dr. S. Radhakrishnan',
+    hodName: 'Head of Department',
     defaultDuration: 'PG Two Year'
   },
   'M.A. English': {
     departmentId: 'dept-eng',
     departmentName: 'Department of English',
-    hodName: 'Prof. Anitha Menon',
+    hodName: 'Head of Department',
     defaultDuration: 'PG Two Year'
   },
   'M.Sc. Computer Science': {
     departmentId: 'dept-cs',
     departmentName: 'Department of Computer Science',
-    hodName: 'Dr. Sunitha Balan',
+    hodName: 'Head of Department',
     defaultDuration: 'PG Two Year'
   },
   'M.Sc. Maths': {
     departmentId: 'dept-mat',
     departmentName: 'Department of Mathematics',
-    hodName: 'Dr. Vinod P. R',
+    hodName: 'Head of Department',
     defaultDuration: 'PG Two Year'
   },
   'M.Sc. Physics': {
     departmentId: 'dept-phy',
     departmentName: 'Department of Physics',
-    hodName: 'Dr. Suresh Babu T',
+    hodName: 'Head of Department',
     defaultDuration: 'PG Two Year'
   },
   'M.Com': {
     departmentId: 'dept-com',
     departmentName: 'Department of Commerce & Management',
-    hodName: 'Dr. K. Jayasree',
+    hodName: 'Head of Department',
     defaultDuration: 'PG Two Year'
   }
 };

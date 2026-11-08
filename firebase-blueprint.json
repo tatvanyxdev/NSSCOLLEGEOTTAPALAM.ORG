@@ -1,150 +1,190 @@
 {
   "entities": {
-    "complaint": {
-      "title": "Complaint",
-      "description": "Statutory grievance, vigilance report, or department-wise complaint record",
+    "special_attendance_event": {
+      "title": "Special Attendance Event",
+      "description": "Institutional and union duty attendance orders forwarded by HOD and sanctioned by Principal",
       "type": "object",
       "properties": {
         "id": {
           "type": "string",
-          "description": "Unique identifier for the complaint record"
-        },
-        "ticketNumber": {
-          "type": "string",
-          "description": "Human-readable tracking ticket number (e.g. GRV-2026-7842)"
+          "description": "Unique identifier for the special attendance order"
         },
         "title": {
           "type": "string",
-          "description": "Subject title of the grievance"
+          "description": "Event or activity title"
         },
         "description": {
           "type": "string",
-          "description": "Detailed narrative description of the issue"
+          "description": "Detailed description or circular memo"
         },
-        "category": {
+        "eventType": {
           "type": "string",
-          "description": "Complaint category code",
+          "description": "Type of event",
           "enum": [
-            "ANTI_RAGGING",
-            "ANTI_DRUG",
-            "INFRASTRUCTURE",
-            "WOMEN_ICC",
-            "CAMPUS_ADMINISTRATION",
-            "DEPT_ACADEMICS",
-            "DEPT_LAB_EQUIPMENT",
-            "DEPT_INTERNAL_MARKS",
-            "DEPT_FACILITY_OTHER"
+            "UNION_PROGRAMME",
+            "POLITICAL_UNION",
+            "COLLEGE_PROGRAMME",
+            "SPORTS",
+            "NSS",
+            "NCC",
+            "CULTURAL",
+            "SEMINAR",
+            "OFFICIAL_EVENT",
+            "STRIKE",
+            "DEPARTMENT_PROGRAMME",
+            "EXAM_DUTY",
+            "OTHER"
           ]
         },
-        "scope": {
+        "eventDate": {
           "type": "string",
-          "description": "Scope of grievance: CAMPUS_WIDE or DEPARTMENT_WISE",
-          "enum": ["CAMPUS_WIDE", "DEPARTMENT_WISE"]
+          "description": "Date of event (YYYY-MM-DD)"
+        },
+        "periodIds": {
+          "type": "array",
+          "description": "Target timetable period IDs"
+        },
+        "isFullDay": {
+          "type": "boolean",
+          "description": "Whether duty covers the entire college day"
+        },
+        "scopeType": {
+          "type": "string",
+          "description": "Target scope",
+          "enum": ["COLLEGE", "DEPARTMENT", "PROGRAMME", "BATCH", "COURSE_GROUP", "SELECTED_STUDENTS"]
         },
         "departmentId": {
           "type": "string",
-          "description": "Department ID if scope is DEPARTMENT_WISE"
+          "description": "Department ID if scope is departmental"
         },
-        "departmentName": {
+        "studentCoverage": {
           "type": "string",
-          "description": "Name of department if scope is DEPARTMENT_WISE"
+          "description": "Coverage mode: ALL_ELIGIBLE or SELECTED_ONLY",
+          "enum": ["ALL_ELIGIBLE", "SELECTED_ONLY"]
         },
-        "locationOnCampus": {
+        "selectedStudentIds": {
+          "type": "array",
+          "description": "List of student IDs participating in the event"
+        },
+        "reason": {
           "type": "string",
-          "description": "Location of incident on campus"
+          "description": "Official justification for duty attendance"
         },
-        "incidentDate": {
+        "dutyCertificateRef": {
           "type": "string",
-          "description": "Date of incident (YYYY-MM-DD)"
+          "description": "Union duty certificate or delegation memo reference"
         },
-        "urgency": {
+        "forwardedByHodId": {
           "type": "string",
-          "description": "Priority level",
-          "enum": ["LOW", "MEDIUM", "HIGH", "EMERGENCY"]
+          "description": "ID of HOD who verified duty slip and forwarded"
         },
-        "isAnonymous": {
-          "type": "boolean",
-          "description": "Whether complainant filed anonymously"
-        },
-        "complainantName": {
+        "forwardedByHodName": {
           "type": "string",
-          "description": "Name of the complainant"
+          "description": "Display name of HOD who forwarded request"
         },
-        "complainantRole": {
+        "forwardedAt": {
           "type": "string",
-          "description": "Role of complainant",
-          "enum": ["STUDENT", "FACULTY", "PARENT", "VISITOR", "ANONYMOUS"]
+          "description": "ISO timestamp when forwarded to Principal"
         },
-        "complainantAdmissionNo": {
+        "principalRemarks": {
           "type": "string",
-          "description": "Student admission number if applicable"
+          "description": "Official remarks by Principal upon sanctioning"
         },
-        "complainantPhone": {
+        "principalActionAt": {
           "type": "string",
-          "description": "Complainant contact phone"
+          "description": "ISO timestamp of Principal action"
         },
-        "complainantEmail": {
+        "approvedBy": {
           "type": "string",
-          "description": "Complainant contact email"
+          "description": "Faculty ID of approving authority"
+        },
+        "approvedByName": {
+          "type": "string",
+          "description": "Name of approving authority"
         },
         "status": {
           "type": "string",
-          "description": "Resolution status",
-          "enum": [
-            "SUBMITTED",
-            "UNDER_INVESTIGATION",
-            "ACTION_TAKEN",
-            "RESOLVED",
-            "DISMISSED"
-          ]
+          "description": "Workflow status",
+          "enum": ["PENDING_PRINCIPAL", "APPROVED", "REJECTED", "APPLIED", "DRAFT"]
         },
-        "actionNotes": {
-          "type": "array",
-          "description": "Chronological official action notes"
-        },
-        "resolutionSummary": {
+        "createdAt": {
           "type": "string",
-          "description": "Final resolution explanation"
-        },
-        "resolvedAt": {
-          "type": "string",
-          "description": "Timestamp when complaint was resolved"
-        },
-        "resolvedBy": {
-          "type": "string",
-          "description": "Officer or authority who resolved the complaint"
-        },
-        "assignedOfficer": {
-          "type": "string",
-          "description": "Assigned handling unit or officer designation"
-        },
-        "submittedAt": {
-          "type": "string",
-          "description": "ISO timestamp of submission"
+          "description": "Creation timestamp"
         },
         "updatedAt": {
           "type": "string",
-          "description": "ISO timestamp of last update"
+          "description": "Last update timestamp"
         }
       },
-      "required": ["id", "ticketNumber", "title", "description", "category", "scope", "status", "submittedAt", "updatedAt"]
+      "required": ["id", "title", "eventType", "eventDate", "scopeType", "reason", "status", "createdAt"]
     },
-    "push_notification": {
-      "title": "Push Notification",
-      "description": "Real-time push notification broadcast dispatched by Principal, HOD, or Super Admin",
+    "announcement": {
+      "title": "College Announcement",
+      "description": "Official digital notice board announcements and academic circulars",
       "type": "object",
       "properties": {
         "id": {
           "type": "string",
-          "description": "Unique identifier for the push notification"
+          "description": "Unique identifier"
         },
         "title": {
           "type": "string",
-          "description": "Headline of the push notification alert"
+          "description": "Notice headline"
+        },
+        "content": {
+          "type": "string",
+          "description": "Notice content body"
+        },
+        "authorId": {
+          "type": "string",
+          "description": "User ID of author"
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Display name of author"
+        },
+        "authorRole": {
+          "type": "string",
+          "description": "Role of notice issuer",
+          "enum": ["PRINCIPAL", "HOD", "TEACHER", "SUPER_ADMIN"]
+        },
+        "departmentId": {
+          "type": "string",
+          "description": "Department ID if department circular"
+        },
+        "targetAudience": {
+          "type": "string",
+          "description": "Audience filter",
+          "enum": ["ALL", "STUDENTS", "FACULTY", "DEPARTMENT"]
+        },
+        "priority": {
+          "type": "string",
+          "description": "Urgency",
+          "enum": ["NORMAL", "IMPORTANT", "URGENT"]
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO publication timestamp"
+        }
+      },
+      "required": ["id", "title", "content", "authorName", "authorRole", "targetAudience", "createdAt"]
+    },
+    "push_notification": {
+      "title": "Push Broadcast Notification",
+      "description": "Campus-wide real-time push alert dispatched by authorities",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique ID"
+        },
+        "title": {
+          "type": "string",
+          "description": "Alert title"
         },
         "body": {
           "type": "string",
-          "description": "Message text and directive content"
+          "description": "Notification message text"
         },
         "senderRole": {
           "type": "string",
@@ -155,70 +195,138 @@
           "type": "string",
           "description": "Display name of the sender"
         },
-        "senderDepartmentId": {
-          "type": "string",
-          "description": "Department ID of the sending authority if HOD"
-        },
-        "senderDepartmentName": {
-          "type": "string",
-          "description": "Department name of the sending authority if HOD"
-        },
         "targetAudience": {
           "type": "string",
-          "description": "Target audience group for the push message",
-          "enum": [
-            "ALL_CAMPUS",
-            "ALL_STUDENTS",
-            "ALL_FACULTY",
-            "ALL_HODS",
-            "MY_DEPARTMENT",
-            "DEPARTMENT_STUDENTS",
-            "DEPARTMENT_FACULTY",
-            "SPECIFIC_DEPARTMENT"
-          ]
-        },
-        "targetDepartmentId": {
-          "type": "string",
-          "description": "Target department ID if targeted to a specific department"
-        },
-        "targetDepartmentName": {
-          "type": "string",
-          "description": "Target department name if targeted to a specific department"
-        },
-        "targetBatch": {
-          "type": "string",
-          "description": "Target academic batch or semester"
+          "description": "Target audience group",
+          "enum": ["ALL_CAMPUS", "ALL_STUDENTS", "ALL_FACULTY", "ALL_HODS", "MY_DEPARTMENT", "DEPARTMENT_STUDENTS", "DEPARTMENT_FACULTY", "SPECIFIC_DEPARTMENT"]
         },
         "priority": {
           "type": "string",
-          "description": "Urgency priority level",
+          "description": "Priority",
           "enum": ["NORMAL", "HIGH", "EMERGENCY"]
         },
         "category": {
           "type": "string",
-          "description": "Category tag of the alert",
+          "description": "Category",
           "enum": ["GENERAL", "ACADEMIC", "EXAM", "EMERGENCY", "EVENT", "MAINTENANCE"]
-        },
-        "actionUrl": {
-          "type": "string",
-          "description": "Optional in-app navigation link"
         },
         "createdAt": {
           "type": "string",
-          "description": "ISO timestamp when the push message was broadcast"
+          "description": "ISO creation timestamp"
         }
       },
       "required": ["id", "title", "body", "senderRole", "senderName", "targetAudience", "priority", "category", "createdAt"]
+    },
+    "student_attendance_summary": {
+      "title": "Student Attendance Summary Rollup",
+      "description": "Aggregated attendance document per student for ultra-low read quota usage on free plans",
+      "type": "object",
+      "properties": {
+        "studentId": {
+          "type": "string",
+          "description": "Student primary ID"
+        },
+        "rollNumber": {
+          "type": "string",
+          "description": "Class roll number"
+        },
+        "admissionNumber": {
+          "type": "string",
+          "description": "College admission number"
+        },
+        "fullName": {
+          "type": "string",
+          "description": "Student full name"
+        },
+        "regularPercentage": {
+          "type": "number",
+          "description": "Regular academic attendance percentage"
+        },
+        "consolidatedPercentage": {
+          "type": "number",
+          "description": "Consolidated attendance percentage with sanctioned special duty"
+        },
+        "totalConducted": {
+          "type": "number",
+          "description": "Total conducted class periods"
+        },
+        "totalPresent": {
+          "type": "number",
+          "description": "Total regular present periods"
+        },
+        "specialDutyApprovedCount": {
+          "type": "number",
+          "description": "Count of principal-sanctioned union duty periods"
+        },
+        "specialDutyPendingCount": {
+          "type": "number",
+          "description": "Count of pending union duty periods"
+        },
+        "lastUpdated": {
+          "type": "string",
+          "description": "ISO timestamp of last summary calculation"
+        }
+      },
+      "required": ["studentId", "rollNumber", "regularPercentage", "consolidatedPercentage", "totalConducted", "lastUpdated"]
+    },
+    "google_account_link": {
+      "title": "Google Account Link",
+      "description": "Mapping between Google Auth email and NSS College student or faculty profile",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique sanitized identifier for the Google link"
+        },
+        "email": {
+          "type": "string",
+          "description": "Google email address"
+        },
+        "userType": {
+          "type": "string",
+          "description": "User type",
+          "enum": ["STUDENT", "STAFF", "SUPER_ADMIN"]
+        },
+        "profileId": {
+          "type": "string",
+          "description": "Linked student ID or faculty ID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of student or faculty"
+        },
+        "identifier": {
+          "type": "string",
+          "description": "University register number or staff employee ID"
+        },
+        "linkedAt": {
+          "type": "string",
+          "description": "ISO timestamp when account was linked"
+        }
+      },
+      "required": ["id", "email", "userType", "profileId", "linkedAt"]
     }
   },
   "firestore": {
-    "/complaints/{complaintId}": {
-      "schema": "complaint",
-      "description": "All campus-wide and department-wise complaints and grievances"
+    "/special_attendance_events/{eventId}": {
+      "schema": "special_attendance_event",
+      "description": "Duty attendance orders submitted by HODs and sanctioned by Principal"
+    },
+    "/announcements/{announcementId}": {
+      "schema": "announcement",
+      "description": "Official college notice board announcements"
     },
     "/push_notifications/{notificationId}": {
       "schema": "push_notification",
-      "description": "Real-time push notification broadcasts dispatched by Principal, HOD, or Super Admin"
+      "description": "Real-time push alerts broadcast by Principal, HOD, or Super Admin"
+    },
+    "/student_attendance_summaries/{studentId}": {
+      "schema": "student_attendance_summary",
+      "description": "Pre-aggregated attendance ledger document per student allowing ~400 students to read within free tier limits for decades"
+    },
+    "/google_account_links/{linkId}": {
+      "schema": "google_account_link",
+      "description": "Persistent Google Sign-In links mapping Google email to student or staff profile"
     }
   }
 }

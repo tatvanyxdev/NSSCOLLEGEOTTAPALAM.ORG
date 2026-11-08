@@ -38,9 +38,10 @@ export const facultyService = {
       // Verify department exists in Supabase departments table to prevent foreign key violation
       const verifiedDeptId = await safeDepartmentId(fac.departmentId);
 
+      const cleanEmpCode = (fac.employeeId?.trim() || (fac as any).employeeCode?.trim()) || null;
       const payload: any = {
-        employee_id: fac.employeeId || (fac as any).employeeCode || null,
-        employee_code: (fac as any).employeeCode || fac.employeeId || null,
+        employee_id: cleanEmpCode,
+        employee_code: cleanEmpCode,
         full_name: fac.fullName,
         email: fac.email || null,
         phone: phoneVal,
@@ -64,9 +65,10 @@ export const facultyService = {
   async updateFaculty(id: string, fac: Partial<Faculty>): Promise<{ success: boolean; error: Error | null }> {
     try {
       const payload: any = {};
-      if (fac.employeeId !== undefined) {
-        payload.employee_id = fac.employeeId;
-        payload.employee_code = fac.employeeId;
+      if (fac.employeeId !== undefined || (fac as any).employeeCode !== undefined) {
+        const cleanEmp = (fac.employeeId?.trim() || (fac as any).employeeCode?.trim()) || null;
+        payload.employee_id = cleanEmp;
+        payload.employee_code = cleanEmp;
       }
       if (fac.fullName !== undefined) payload.full_name = fac.fullName;
       if (fac.email !== undefined) payload.email = fac.email;

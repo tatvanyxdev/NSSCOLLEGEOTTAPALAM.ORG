@@ -7,8 +7,7 @@ import {
   GraduationCap,
   Trees,
   PhoneCall,
-  FileText,
-  ShieldAlert
+  FileText
 } from 'lucide-react';
 
 interface QuickAccessProps {
@@ -77,13 +76,13 @@ export const QuickAccess: React.FC<QuickAccessProps> = ({ onLoginClick, onNaviga
       badgeColor: 'bg-emerald-100 text-emerald-800'
     },
     {
-      id: 'qa-complaints',
-      title: 'Complaints & Vigilance',
-      description: 'Anti-Ragging, Anti-Drug & Grievances',
-      icon: ShieldAlert,
-      page: 'complaints',
-      href: '#complaints',
-      badge: 'Redressal',
+      id: 'qa-calendar',
+      title: 'Academic Calendar',
+      description: 'Terms, Exams & Schedule',
+      icon: Calendar,
+      page: 'announcements',
+      href: '#announcements',
+      badge: 'Schedule',
       badgeColor: 'bg-rose-100 text-rose-900'
     },
     {

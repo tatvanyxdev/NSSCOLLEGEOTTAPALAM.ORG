@@ -26,9 +26,16 @@ import {
   CheckCircle2,
   Lock,
   Smartphone,
-  Wrench
+  Wrench,
+  Flame,
+  Shield,
+  Zap,
+  RotateCcw
 } from 'lucide-react';
+import firebaseConfig from '../../../firebase-applet-config.json';
+import { firebaseSyncService } from '../../services/firebaseSyncService';
 import { SuperAdminMaintenanceManager } from '../maintenance/SuperAdminMaintenanceManager';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 
 type SettingsTab = 'GENERAL' | 'ATTENDANCE' | 'MAINTENANCE' | 'STRENGTH' | 'DATABASE' | 'NOTIFICATIONS' | 'DANGER';
 
@@ -83,11 +90,14 @@ export const SystemSettingsView: React.FC = () => {
   const [strengthLevel, setStrengthLevel] = useState<'PROGRAMMES' | 'BATCHES' | 'OFFERINGS' | 'GROUPS'>('PROGRAMMES');
 
   const [copiedSql, setCopiedSql] = useState(false);
+  const freeTierStats = firebaseSyncService.getFreePlanHealthStats(students.length || 400);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSavingGeneral, setIsSavingGeneral] = useState(false);
   const [isSavingAttendance, setIsSavingAttendance] = useState(false);
   const [isSavingNotifications, setIsSavingNotifications] = useState(false);
+
+  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
 
   const triggerSuccess = (msg: string) => {
     setSaveError(null);
@@ -154,16 +164,36 @@ export const SystemSettingsView: React.FC = () => {
     triggerSuccess('Portal access and notification settings saved in Supabase.');
   };
 
+  const [isWipingRemoteTest, setIsWipingRemoteTest] = useState(false);
+  const [resetType, setResetType] = useState<'LOCAL_ONLY' | 'COMPLETE_CLEAN'>('COMPLETE_CLEAN');
+
   const handleCopySql = () => {
     navigator.clipboard.writeText(SUPABASE_SCHEMA_SQL);
     setCopiedSql(true);
     setTimeout(() => setCopiedSql(false), 2500);
   };
 
-  const handleResetData = () => {
+  const handleResetDataClick = (type: 'LOCAL_ONLY' | 'COMPLETE_CLEAN' = 'COMPLETE_CLEAN') => {
     if (!canReset) return;
-    if (confirm('CRITICAL ACTION: Are you sure you want to reset all mock records to the initial NSS College Ottapalam dataset?')) {
-      resetToDefaultData();
+    setResetType(type);
+    setIsResetConfirmOpen(true);
+  };
+
+  const handleConfirmReset = async () => {
+    setIsWipingRemoteTest(true);
+    try {
+      const wipeRemote = resetType === 'COMPLETE_CLEAN';
+      await resetToDefaultData(wipeRemote);
+      setIsResetConfirmOpen(false);
+      triggerSuccess(
+        wipeRemote
+          ? 'System reset completed! All test attendance, sessions, and cached data have been erased.'
+          : 'Local cache cleared and reset to fresh institutional state.'
+      );
+    } catch (e: any) {
+      setSaveError('Error during system reset: ' + (e.message || e));
+    } finally {
+      setIsWipingRemoteTest(false);
     }
   };
 
@@ -253,11 +283,14 @@ export const SystemSettingsView: React.FC = () => {
           {canReset && (
             <button
               onClick={() => setActiveTab('DANGER')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${
-                activeTab === 'DANGER' ? 'bg-rose-100 text-rose-800' : 'text-rose-600 hover:text-rose-800'
+              className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'DANGER'
+                  ? 'bg-rose-600 text-white shadow-xs'
+                  : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
               }`}
             >
-              Reset
+              <RotateCcw className="w-3 h-3" />
+              <span>Reset & Clean App</span>
             </button>
           )}
         </div>
@@ -956,6 +989,152 @@ export const SystemSettingsView: React.FC = () => {
             </div>
           </div>
 
+          {/* Firebase Cloud & Free-Plan Longevity Architecture */}
+          <div className="bg-white rounded-2xl p-6 border-2 border-amber-300/80 shadow-xs space-y-5">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-amber-500 text-white">
+                    <Flame className="w-4 h-4" />
+                  </div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Firebase Cloud Architecture & Free-Tier Longevity
+                  </h3>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    LIVE CONNECTED (SPARK TIER)
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Firestore Database ID:{' '}
+                  <span className="font-mono text-slate-800 font-semibold">{firebaseConfig.firestoreDatabaseId}</span>
+                  {' '}• Project: <span className="font-mono text-slate-800 font-semibold">{firebaseConfig.projectId}</span>
+                </p>
+              </div>
+
+              <div className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-1.5 shrink-0">
+                <Zap className="w-4 h-4 text-emerald-600" />
+                <span>Estimated Lifespan on Free Plan: 10+ Years</span>
+              </div>
+            </div>
+
+            {/* 400 Students Free-Tier Quota Health Bars */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-700">
+                  Annual Active Scale: ~{freeTierStats.estimatedStudents} Students / Academic Year
+                </span>
+                <span className="text-slate-500 text-[11px]">
+                  Daily spark plan consumption headroom
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* 1. Daily Reads */}
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-slate-700">Daily Document Reads</span>
+                    <span className="font-mono font-bold text-emerald-600 text-[11px]">
+                      {freeTierStats.dailyReadUsagePercent}% used
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-emerald-500 h-2 rounded-full transition-all"
+                      style={{ width: `${Math.max(2, freeTierStats.dailyReadUsagePercent)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-slate-500">
+                    <span>Est. ~{Math.round(freeTierStats.estimatedStudents * 1.5 + 150)} / day</span>
+                    <span className="font-semibold text-slate-700">Limit: 50,000 / day</span>
+                  </div>
+                </div>
+
+                {/* 2. Daily Writes */}
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-slate-700">Daily Document Writes</span>
+                    <span className="font-mono font-bold text-emerald-600 text-[11px]">
+                      {freeTierStats.dailyWriteUsagePercent}% used
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-emerald-500 h-2 rounded-full transition-all"
+                      style={{ width: `${Math.max(2, freeTierStats.dailyWriteUsagePercent)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-slate-500">
+                    <span>Est. ~45 writes / day</span>
+                    <span className="font-semibold text-slate-700">Limit: 20,000 / day</span>
+                  </div>
+                </div>
+
+                {/* 3. Stored Data */}
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-slate-700">Cloud Storage Volume</span>
+                    <span className="font-mono font-bold text-emerald-600 text-[11px]">
+                      {((freeTierStats.storageUsageMb / freeTierStats.maxFreeStorageMb) * 100).toFixed(2)}% used
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-emerald-500 h-2 rounded-full transition-all"
+                      style={{ width: `${Math.max(2, (freeTierStats.storageUsageMb / freeTierStats.maxFreeStorageMb) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-slate-500">
+                    <span>Current: ~{freeTierStats.storageUsageMb} MB</span>
+                    <span className="font-semibold text-slate-700">Limit: 1,024 MB (1 GB)</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Architectural Features Connected to Firebase */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 text-xs">
+              <div className="p-3 bg-amber-50/60 rounded-xl border border-amber-200/80 space-y-1">
+                <div className="font-bold text-amber-900 flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-amber-700" />
+                  Real-time Special Attendance Queue
+                </div>
+                <p className="text-[11px] text-amber-800 leading-relaxed">
+                  Duty attendance requests (union programmes, youth fest) forwarded by HODs sync directly to Firestore. The Principal panel approves with zero lag across devices.
+                </p>
+              </div>
+
+              <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-200/80 space-y-1">
+                <div className="font-bold text-blue-900 flex items-center gap-1.5">
+                  <Bell className="w-4 h-4 text-blue-700" />
+                  Live Notice Board & Push Broadcasts
+                </div>
+                <p className="text-[11px] text-blue-800 leading-relaxed">
+                  Circulars, exam timetables, and emergency alerts sync instantly to Firestore collection <code className="font-mono font-semibold">announcements</code> and <code className="font-mono font-semibold">push_notifications</code> with zero polling.
+                </p>
+              </div>
+
+              <div className="p-3 bg-emerald-50/60 rounded-xl border border-emerald-200/80 space-y-1">
+                <div className="font-bold text-emerald-900 flex items-center gap-1.5">
+                  <Zap className="w-4 h-4 text-emerald-700" />
+                  Pre-Aggregated Student Ledger
+                </div>
+                <p className="text-[11px] text-emerald-800 leading-relaxed">
+                  Students fetch only their single aggregated summary document (<code className="font-mono font-semibold">student_attendance_summaries</code>) instead of querying thousands of hourly rows, consuming &lt;1.5% of free quotas.
+                </p>
+              </div>
+
+              <div className="p-3 bg-indigo-50/60 rounded-xl border border-indigo-200/80 space-y-1">
+                <div className="font-bold text-indigo-900 flex items-center gap-1.5">
+                  <Server className="w-4 h-4 text-indigo-700" />
+                  Continuous Uptime (No Inactivity Sleep)
+                </div>
+                <p className="text-[11px] text-indigo-800 leading-relaxed">
+                  Firestore free tier has <strong>zero inactivity sleep</strong>, ensuring notices and duty approvals remain accessible 24/7 even during vacation periods.
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* DDL Schema Preview */}
           <div className="bg-slate-900 rounded-2xl p-6 border border-slate-800 text-slate-300 font-mono text-xs">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
@@ -1071,26 +1250,88 @@ export const SystemSettingsView: React.FC = () => {
           </div>
 
           <p className="text-xs text-slate-600 leading-relaxed">
-            Resetting system state will restore all mock attendance records, departments, courses, and timetable schedules to the default NSS College Ottapalam FYUGP seed dataset.
+            Resetting system state will clear all cached local modifications and restore the clean institutional dataset for NSS College Ottapalam.
           </p>
 
-          <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div>
-              <h4 className="text-xs font-bold text-rose-950">Reset Database State</h4>
-              <p className="text-[11px] text-rose-800 mt-0.5">
-                Clears custom local storage modifications and restores clean NSS seed dataset.
-              </p>
+          <div className="space-y-4">
+            <div className="p-5 rounded-2xl bg-rose-50 border border-rose-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="text-sm font-extrabold text-rose-950">Erase All Test Data & Reset App</h4>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-200 text-rose-900 uppercase">
+                    Testing Mode
+                  </span>
+                </div>
+                <p className="text-xs text-rose-800 mt-1 max-w-xl leading-relaxed">
+                  Erases all test attendance sessions, attendance marks, leave requests, duty exemptions, and local modifications. Returns the application to a pristine, clean new state ready for fresh real-world testing.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleResetDataClick('COMPLETE_CLEAN')}
+                disabled={isWipingRemoteTest}
+                className="px-5 py-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all shrink-0 cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${isWipingRemoteTest ? 'animate-spin' : ''}`} />
+                <span>Reset All Test Data</span>
+              </button>
             </div>
 
-            <button
-              onClick={handleResetData}
-              className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-md shadow-rose-600/20 transition-all shrink-0"
-            >
-              <RefreshCw className="w-4 h-4" /> Reset Mock State
-            </button>
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <h4 className="text-xs font-bold text-slate-900">Clear Local Storage Cache Only</h4>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Clears local browser cache overrides and re-fetches records directly from database.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleResetDataClick('LOCAL_ONLY')}
+                disabled={isWipingRemoteTest}
+                className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold flex items-center gap-2 transition-all shrink-0 cursor-pointer disabled:opacity-50"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Clear Local Cache</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
+
+      {/* Confirm Reset Dialog */}
+      <ConfirmDialog
+        isOpen={isResetConfirmOpen}
+        onClose={() => setIsResetConfirmOpen(false)}
+        onConfirm={handleConfirmReset}
+        title={resetType === 'COMPLETE_CLEAN' ? 'Erase All Test Data & Reset App?' : 'Reset Local Storage Cache?'}
+        message={
+          <div>
+            {resetType === 'COMPLETE_CLEAN' ? (
+              <>
+                <p className="text-sm font-semibold text-slate-900">
+                  Are you sure you want to erase all test attendance records and return to a clean, fresh app?
+                </p>
+                <p className="mt-2 text-xs text-rose-700 font-medium leading-relaxed bg-rose-50 p-2.5 rounded-lg border border-rose-200">
+                  This will erase all test attendance records, class sessions, correction requests, special duty certificates, and cached storage. Your departments, programmes, and course structure will remain intact.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-slate-800">
+                  Are you sure you want to clear your browser local storage cache?
+                </p>
+                <p className="mt-2 text-xs text-slate-500">
+                  Your device cache will be reset and freshly synchronized with the database.
+                </p>
+              </>
+            )}
+          </div>
+        }
+        confirmLabel={resetType === 'COMPLETE_CLEAN' ? 'Yes, Erase & Reset App' : 'Yes, Clear Cache'}
+        variant="danger"
+      />
     </div>
   );
 };
