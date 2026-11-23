@@ -56,6 +56,12 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
     departments,
     programmes,
     admissionBatches,
+    faculty,
+    courseGroups,
+    timetableEntries,
+    classSessions,
+    studentCourseRegistrations,
+    getClassTutorCohort,
     addStudent,
     updateStudent,
     deleteStudent,
@@ -65,25 +71,28 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
 
   const { activeRole, user } = useAuth();
   const isStudent = activeRole === 'STUDENT';
-  const hodDeptId = activeRole === 'HOD' ? user?.departmentId : undefined;
+  const currentFaculty = faculty.find(
+    f => f.id === user?.id || (user?.email && f.email?.toLowerCase() === user.email.toLowerCase())
+  );
+  const hodDeptId =
+    activeRole === 'HOD'
+      ? user?.departmentId ||
+        currentFaculty?.departmentId ||
+        departments.find(
+          d => d.hodFacultyId === user?.id || (currentFaculty && d.hodFacultyId === currentFaculty.id)
+        )?.id
+      : undefined;
 
   // CRITICAL: If the logged in user is a student, strictly isolate them to their individual profile!
   if (isStudent) {
     return <StudentIndividualProfileView />;
   }
 
-  // Enrollment permissions: Super Admin, HOD, Class Tutor, and Office Staff
-  const canCreate =
-    can(activeRole, 'students', 'create') ||
-    ['SUPER_ADMIN', 'HOD', 'CLASS_TUTOR', 'OFFICE_STAFF'].includes(activeRole);
-
-  const canEdit =
-    can(activeRole, 'students', 'update') ||
-    ['SUPER_ADMIN', 'HOD', 'CLASS_TUTOR', 'OFFICE_STAFF'].includes(activeRole);
-
-  const canDelete =
-    can(activeRole, 'students', 'delete') ||
-    ['SUPER_ADMIN', 'PRINCIPAL', 'HOD', 'OFFICE_STAFF', 'CLASS_TUTOR'].includes(activeRole);
+  // Enrollment & management permissions aligned strictly with centralized permissions matrix
+  const canCreate = can(activeRole, 'students', 'create');
+  const canEdit = can(activeRole, 'students', 'update');
+  const canDelete = can(activeRole, 'students', 'delete');
+  const canViewPortalCredentials = ['SUPER_ADMIN', 'PRINCIPAL', 'OFFICE_STAFF', 'HOD'].includes(activeRole);
 
   const [filterDept, setFilterDept] = useState<string>(
     hodDeptId || 'ALL'
@@ -135,7 +144,51 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
   const usernameRules = checkCredentialRules(username);
   const passwordRules = checkCredentialRules(password);
 
+  // Compute assigned student IDs for scoped teaching roles
+  const isAssignedFacultyScoped = ['TEACHER', 'CLASS_TUTOR', 'COURSE_COORDINATOR'].includes(activeRole);
+  const assignedStudentIds = React.useMemo(() => {
+    if (!isAssignedFacultyScoped) return null;
+    const actorIds = new Set([user?.id, currentFaculty?.id].filter(Boolean) as string[]);
+    const groupIds = new Set<string>();
+    courseGroups.forEach(g => {
+      if (g.facultyId && actorIds.has(g.facultyId)) groupIds.add(g.id);
+    });
+    timetableEntries.forEach(te => {
+      if (te.facultyId && actorIds.has(te.facultyId) && te.courseGroupId) groupIds.add(te.courseGroupId);
+    });
+    classSessions.forEach(cs => {
+      if (
+        (cs.facultyId && actorIds.has(cs.facultyId)) ||
+        (cs.substituteFacultyId && actorIds.has(cs.substituteFacultyId))
+      ) {
+        if (cs.courseGroupId) groupIds.add(cs.courseGroupId);
+      }
+    });
+    const allowed = new Set<string>();
+    studentCourseRegistrations.forEach(reg => {
+      if (groupIds.has(reg.courseGroupId)) allowed.add(reg.studentId);
+    });
+    const cohort = getClassTutorCohort(user?.id) || (currentFaculty ? getClassTutorCohort(currentFaculty.id) : null);
+    cohort?.cohortStudents?.forEach(s => allowed.add(s.id));
+    return allowed;
+  }, [
+    isAssignedFacultyScoped,
+    user?.id,
+    currentFaculty,
+    courseGroups,
+    timetableEntries,
+    classSessions,
+    studentCourseRegistrations,
+    getClassTutorCohort
+  ]);
+
   const filteredStudents = students.filter(s => {
+    if (activeRole === 'HOD') {
+      if (!hodDeptId || s.homeDepartmentId !== hodDeptId) return false;
+    } else if (isAssignedFacultyScoped && assignedStudentIds) {
+      if (!assignedStudentIds.has(s.id)) return false;
+    }
+
     const matchesDept = filterDept === 'ALL' || s.homeDepartmentId === filterDept;
     const matchesSem = filterSem === 'ALL' || s.currentSemester.toString() === filterSem;
     const q = searchQuery.toLowerCase().trim();
@@ -146,7 +199,7 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
       s.admissionNumber.toLowerCase().includes(q) ||
       (s.universityRegisterNumber && s.universityRegisterNumber.toLowerCase().includes(q)) ||
       (s.mobileNumber && s.mobileNumber.toLowerCase().includes(q)) ||
-      (s.username && s.username.toLowerCase().includes(q)) ||
+      (canViewPortalCredentials && s.username && s.username.toLowerCase().includes(q)) ||
       s.email.toLowerCase().includes(q);
 
     return matchesDept && matchesSem && matchesSearch;
@@ -619,7 +672,7 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
                 <th className="py-3.5 px-4">Univ Register Number</th>
                 <th className="py-3.5 px-4">Department & Programme</th>
                 <th className="py-3.5 px-4">Semester & Year</th>
-                <th className="py-3.5 px-4">Portal Login</th>
+                {canViewPortalCredentials && <th className="py-3.5 px-4">Portal Login</th>}
                 <th className="py-3.5 px-4 text-center">Attendance %</th>
                 <th className="py-3.5 px-4 text-right">Actions</th>
               </tr>
@@ -627,7 +680,10 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
             <tbody className="divide-y divide-slate-100">
               {filteredStudents.length === 0 ? (
                 <tr>
-                  <td colSpan={canDelete ? 8 : 7} className="py-10 text-center text-slate-400">
+                  <td
+                    colSpan={(canDelete ? 1 : 0) + (canViewPortalCredentials ? 1 : 0) + 6}
+                    className="py-10 text-center text-slate-400"
+                  >
                     No student records found matching the filter criteria.
                   </td>
                 </tr>
@@ -704,39 +760,54 @@ export const StudentsManagerView: React.FC<StudentsManagerViewProps> = ({
                         <span className="text-[10px] text-slate-400">{student.admissionBatch}</span>
                       </td>
 
-                      {/* Portal Login Credentials */}
-                      <td className="py-3 px-4">
-                        <div className="font-mono text-xs font-bold text-slate-900">
-                          @{student.username || student.universityRegisterNumber || student.admissionNumber.toLowerCase()}
-                        </div>
-                        <div className="font-mono text-[10px] text-slate-600 mt-0.5 space-y-0.5">
-                          <div>
-                            <span className="text-slate-400">Pass:</span>{' '}
-                            <span className="font-semibold text-amber-900 bg-amber-50 px-1 py-0.2 rounded border border-amber-200">
-                              {student.password || 'DOB+MobLast2'}
-                            </span>
+                      {/* Portal Login Credentials (restricted to Admin / Principal / Office / Dept HOD) */}
+                      {canViewPortalCredentials && (
+                        <td className="py-3 px-4">
+                          <div className="font-mono text-xs font-bold text-slate-900">
+                            @{student.username || student.universityRegisterNumber || student.admissionNumber.toLowerCase()}
                           </div>
-                          {student.dateOfBirth && (
-                            <div className="text-slate-400 text-[9px]">
-                              DOB: {student.dateOfBirth}
+                          <div className="font-mono text-[10px] text-slate-600 mt-0.5 space-y-0.5">
+                            <div>
+                              <span className="text-slate-400">Pass:</span>{' '}
+                              <span className="font-semibold text-amber-900 bg-amber-50 px-1 py-0.2 rounded border border-amber-200">
+                                {student.password || 'DOB+MobLast2'}
+                              </span>
                             </div>
-                          )}
-                        </div>
-                      </td>
+                            {student.dateOfBirth && (
+                              <div className="text-slate-400 text-[9px]">
+                                DOB: {student.dateOfBirth}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      )}
 
                       {/* Attendance % */}
                       <td className="py-3 px-4 text-center">
-                        <div className="inline-flex flex-col items-center">
-                          <Badge
-                            variant={summary.isShortage ? 'danger' : summary.isWarning ? 'warning' : 'success'}
-                            size="md"
-                          >
-                            {summary.overallPercentage}%
-                          </Badge>
-                          <span className="text-[10px] text-slate-400 mt-0.5">
-                            {summary.totalPresent + summary.totalOd} / {summary.totalConducted} Sessions
-                          </span>
-                        </div>
+                        {summary.totalConducted === 0 ? (
+                          <div className="inline-flex flex-col items-center">
+                            <Badge variant="outline" size="md">
+                              No Sessions
+                            </Badge>
+                            <span className="text-[10px] text-slate-400 mt-0.5">
+                              {summary.policy === 'SESSION_STRICT' ? 'Session Rule' : 'Hour-Wise'}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="inline-flex flex-col items-center">
+                            <Badge
+                              variant={summary.isShortage ? 'danger' : summary.isWarning ? 'warning' : 'success'}
+                              size="md"
+                            >
+                              {summary.overallPercentage}%
+                            </Badge>
+                            <span className="text-[10px] text-slate-500 mt-0.5">
+                              {summary.policy === 'SESSION_STRICT'
+                                ? `${summary.awardedDays}/${summary.totalWorkingDays}d (${summary.consolidatedTotalAttended}/${summary.totalConducted} hrs)`
+                                : `${summary.consolidatedTotalAttended} / ${summary.totalConducted} hrs`}
+                            </span>
+                          </div>
+                        )}
                       </td>
 
                       {/* Actions */}

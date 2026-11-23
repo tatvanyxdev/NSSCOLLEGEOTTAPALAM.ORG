@@ -41,7 +41,9 @@ const COLUMN_ALIASES: Record<string, string[]> = {
   employee_id: ['employee_code'],
   employee_code: ['employee_id'],
   day_of_week: ['weekday'],
-  weekday: ['day_of_week']
+  weekday: ['day_of_week'],
+  date: ['session_date'],
+  session_date: ['date']
 };
 
 /**

@@ -115,7 +115,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Partial<Record<ResourceType, Act
     course_offerings: ['read_assigned' as ActionType],
     course_registrations: ['read_assigned'],
     timetable: ['read_assigned'],
-    announcements: ['read', 'create']
+    announcements: ['read', 'create'],
+    reports: ['read_assigned', 'export_csv']
   },
 
   CLASS_TUTOR: {
@@ -199,6 +200,7 @@ export const ROLE_ALLOWED_VIEWS: Record<UserRole, string[]> = {
     'faculty',
     'reports',
     'announcements',
+    'credentials',
     'settings'
   ],
 
@@ -243,6 +245,7 @@ export const ROLE_ALLOWED_VIEWS: Record<UserRole, string[]> = {
     'courses',
     'registrations',
     'students',
+    'reports',
     'announcements'
   ],
 
@@ -353,7 +356,7 @@ export function canManageDepartmentScope(
   if (!role) return false;
   if (role === 'SUPER_ADMIN') return true;
   if (role === 'HOD') {
-    if (!userDepartmentId || !targetDepartmentId) return true; // fallback if unlinked in demo
+    if (!userDepartmentId || !targetDepartmentId) return false;
     return userDepartmentId === targetDepartmentId;
   }
   return false;

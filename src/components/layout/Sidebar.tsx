@@ -27,6 +27,7 @@ import {
   FileCheck,
   Download,
   Bus,
+  KeyRound,
   X
 } from 'lucide-react';
 
@@ -241,6 +242,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           : []),
         ...(activeRole === 'SUPER_ADMIN'
           ? [
+              { id: 'credentials', label: 'User Credentials', icon: KeyRound },
               { id: 'settings', label: 'Settings', icon: Settings }
             ]
           : [])

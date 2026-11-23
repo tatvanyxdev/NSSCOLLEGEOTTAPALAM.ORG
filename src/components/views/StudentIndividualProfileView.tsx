@@ -334,7 +334,16 @@ export const StudentIndividualProfileView: React.FC = () => {
                     <p className="text-xs text-slate-500">Regular classes vs. Principal-sanctioned Union / Political duty</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold border ${
+                      attendanceSummary.policy === 'SESSION_STRICT'
+                        ? 'bg-amber-50 text-amber-900 border-amber-200'
+                        : 'bg-blue-50 text-blue-800 border-blue-200'
+                    }`}
+                  >
+                    {attendanceSummary.policyLabel}
+                  </span>
                   <span
                     className={`px-3 py-1 rounded-full text-xs font-bold border ${
                       attendanceSummary.consolidatedPercentage >= 75
@@ -369,7 +378,7 @@ export const StudentIndividualProfileView: React.FC = () => {
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-500 leading-tight">
-                    Marked directly by course faculty in lecture periods.
+                    Marked directly by course faculty in lecture periods (Hour-Wise).
                   </p>
                 </div>
 
@@ -377,7 +386,7 @@ export const StudentIndividualProfileView: React.FC = () => {
                 <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200/80 space-y-1">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-bold uppercase tracking-wider text-amber-900 block">
-                      Special / Union Duty
+                      Duty Leave &amp; Special Duty
                     </span>
                     {attendanceSummary.specialDutyPendingCount > 0 && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 font-bold">
@@ -387,33 +396,76 @@ export const StudentIndividualProfileView: React.FC = () => {
                   </div>
                   <div className="flex items-baseline gap-2">
                     <span className="text-2xl font-black text-amber-900 font-mono">
-                      +{attendanceSummary.specialDutyApprovedCount} hrs
+                      +{attendanceSummary.totalDutyLeave} hrs
                     </span>
-                    <span className="text-xs text-amber-700">sanctioned</span>
+                    <span className="text-xs text-amber-700">credited</span>
                   </div>
                   <p className="text-[11px] text-amber-800 leading-tight">
-                    College Union, student delegation & official representation.
+                    Teacher-marked Duty Leave, OD &amp; Principal-sanctioned Union duty.
                   </p>
                 </div>
 
                 {/* 3. Consolidated Official Total */}
                 <div className="p-4 rounded-xl bg-indigo-50/70 border border-indigo-200/80 space-y-1">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-950 block">
-                    Consolidated Total Attendance
+                    Consolidated Official Total
                   </span>
                   <div className="flex items-baseline gap-2">
                     <span className="text-2xl font-black text-indigo-900 font-mono">
-                      {attendanceSummary.consolidatedPercentage}%
+                      {attendanceSummary.overallPercentage}%
                     </span>
                     <span className="text-xs text-indigo-700">
-                      ({attendanceSummary.consolidatedTotalAttended}/{attendanceSummary.totalConducted} hrs)
+                      {attendanceSummary.policy === 'SESSION_STRICT'
+                        ? `(${attendanceSummary.awardedDays}/${attendanceSummary.totalWorkingDays} days)`
+                        : `(${attendanceSummary.consolidatedTotalAttended}/${attendanceSummary.totalConducted} hrs)`}
                     </span>
                   </div>
                   <p className="text-[11px] text-indigo-900 font-semibold leading-tight">
-                    Official percentage for university exam hall tickets.
+                    {attendanceSummary.policy === 'SESSION_STRICT'
+                      ? `Hour-Wise Equivalent: ${attendanceSummary.hourWisePercentage}% (${attendanceSummary.consolidatedTotalAttended}/${attendanceSummary.totalConducted} hrs)`
+                      : 'Official percentage for university exam hall tickets.'}
                   </p>
                 </div>
               </div>
+
+              {/* Half-Day Penalty Transparent Warning Breakdown */}
+              {attendanceSummary.policy === 'SESSION_STRICT' && attendanceSummary.halfDayPenalties.length > 0 && (
+                <div className="p-4 rounded-xl bg-amber-50/80 border border-amber-200 space-y-2.5 text-xs">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-amber-950">
+                        Half-Day Penalty Deduction: {attendanceSummary.halfDaysLost} session(s) lost (-
+                        {(attendanceSummary.halfDaysLost * 0.5).toFixed(1)} working days)
+                      </p>
+                      <p className="text-[11px] text-amber-800 mt-0.5 leading-snug">
+                        Your department follows the Strict Session-Wise Rule: missing even one conducted period in FN (Forenoon) or AN (Afternoon) forfeits 0.5 day overall attendance. Individual subject internal percentages remain Hour-Wise.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto">
+                    {attendanceSummary.halfDayPenalties.map(pen => (
+                      <div
+                        key={`${pen.date}-${pen.session}`}
+                        className="p-2.5 rounded-lg bg-white border border-amber-200/80 flex items-center justify-between gap-2 text-[11px]"
+                      >
+                        <div className="min-w-0">
+                          <span className="font-mono font-bold text-slate-900">{pen.date}</span>{' '}
+                          <span className="font-bold text-amber-900">
+                            · {pen.session === 'FN' ? 'FN (Morning)' : 'AN (Afternoon)'}
+                          </span>
+                          <p className="text-slate-600 truncate">
+                            Absent in {pen.absentPeriodLabels.join(', ')} ({pen.coursesAffected.join(', ')})
+                          </p>
+                        </div>
+                        <span className="font-mono font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded shrink-0">
+                          -0.5 day
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Special Duty Submissions & Approvals List for this Student */}
               {attendanceSummary.studentSpecialEvents && attendanceSummary.studentSpecialEvents.length > 0 && (

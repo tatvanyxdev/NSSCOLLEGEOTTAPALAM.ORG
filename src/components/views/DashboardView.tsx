@@ -114,6 +114,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
     return () => unsub();
   }, []);
 
+  // Resolve current faculty & strict HOD department scope
+  const currentFaculty = faculty.find(
+    f => f.id === user?.id || (user?.email && f.email?.toLowerCase() === user.email.toLowerCase())
+  );
+  const isHOD = activeRole === 'HOD';
+  const hodDeptId = isHOD
+    ? user?.departmentId ||
+      currentFaculty?.departmentId ||
+      departments.find(
+        d => d.hodFacultyId === user?.id || (currentFaculty && d.hodFacultyId === currentFaculty.id)
+      )?.id
+    : undefined;
+
   // Today's date string
   const todayDateStr = new Date().toISOString().split('T')[0];
 
@@ -187,19 +200,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
   );
   const teacherPending = teacherSessions.filter(s => !s.attendanceSubmitted);
 
-  // HOD / Admin department stats
-  const deptAttendanceData = departments.map(d => {
+  // HOD / Admin department stats (Policy-Aware)
+  const scopedDepartments = isHOD
+    ? departments.filter(d => d.id === hodDeptId)
+    : departments;
+  const deptAttendanceData = scopedDepartments.map(d => {
     const deptStudents = students.filter(s => s.homeDepartmentId === d.id);
-    let totalP = 0;
-    let totalC = 0;
+    let pctSum = 0;
+    let activeCount = 0;
 
     deptStudents.forEach(stu => {
       const sum = getStudentAttendanceSummary(stu.id);
-      totalC += sum.totalConducted;
-      totalP += sum.totalPresent + sum.totalOd + sum.totalMedicalLeave;
+      if (sum.totalConducted > 0) {
+        pctSum += sum.overallPercentage;
+        activeCount++;
+      }
     });
 
-    const avg = totalC > 0 ? Number(((totalP / totalC) * 100).toFixed(1)) : 0;
+    const avg = activeCount > 0 ? Number((pctSum / activeCount).toFixed(1)) : 0;
     return {
       name: d.code,
       fullName: d.name,
@@ -509,7 +527,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
           />
           <StatCard
             title="Corrections"
-            value={correctionRequests.length}
+            value={correctionRequests.filter(r => {
+              const actorIds = new Set([user?.id, currentFaculty?.id].filter(Boolean) as string[]);
+              const sess = classSessions.find(cs => cs.id === r.classSessionId);
+              return (
+                (r.requestedByFacultyId && actorIds.has(r.requestedByFacultyId)) ||
+                (sess?.facultyId && actorIds.has(sess.facultyId)) ||
+                (sess?.substituteFacultyId && actorIds.has(sess.substituteFacultyId))
+              );
+            }).length}
             icon={<FileSpreadsheet className="w-5 h-5" />}
             color="amber"
           />
@@ -740,20 +766,52 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
   // ==========================================
   // 3. ADMINISTRATIVE / HOD / PRINCIPAL DASHBOARD VIEW
   // ==========================================
-  const totalStudentsCount = students.length;
-  const totalConductedToday = classSessions.filter(s => s.attendanceSubmitted).length;
-  const totalScheduledToday = classSessions.length;
+  const dashboardStudents = isHOD
+    ? students.filter(s => hodDeptId && s.homeDepartmentId === hodDeptId)
+    : students;
+  const dashboardActiveSessions = classSessions.filter(s => {
+    if (s.status === 'CANCELLED') return false;
+    if (isHOD) {
+      const offering = courseOfferings.find(o => o.id === s.courseOfferingId);
+      return Boolean(hodDeptId && offering?.departmentId === hodDeptId);
+    }
+    return true;
+  });
+
+  const totalStudentsCount = dashboardStudents.length;
+  const totalConductedToday = dashboardActiveSessions.filter(s => s.attendanceSubmitted).length;
+  const totalScheduledToday = dashboardActiveSessions.length;
   const facultySubmissionRate = totalScheduledToday > 0 ? ((totalConductedToday / totalScheduledToday) * 100).toFixed(1) : null;
 
-  let totalCampusP = 0;
-  let totalCampusC = 0;
-  students.forEach(s => {
+  let campusPctSum = 0;
+  let campusActiveCount = 0;
+  dashboardStudents.forEach(s => {
     const sum = getStudentAttendanceSummary(s.id);
-    totalCampusC += sum.totalConducted;
-    totalCampusP += sum.totalPresent + sum.totalOd + sum.totalMedicalLeave;
+    if (sum.totalConducted > 0) {
+      campusPctSum += sum.overallPercentage;
+      campusActiveCount++;
+    }
   });
-  const institutionalAvg = totalCampusC > 0 ? `${((totalCampusP / totalCampusC) * 100).toFixed(1)}%` : '—';
-  const hasAttendanceData = totalCampusC > 0;
+  const institutionalAvg = campusActiveCount > 0 ? `${(campusPctSum / campusActiveCount).toFixed(1)}%` : '—';
+  const hasAttendanceData = campusActiveCount > 0;
+
+  const scopedPendingCorrections = correctionRequests.filter(c => {
+    if (c.status !== 'PENDING') return false;
+    if (isHOD) {
+      const sess = classSessions.find(s => s.id === c.classSessionId);
+      const offering = courseOfferings.find(o => o.id === sess?.courseOfferingId);
+      return Boolean(hodDeptId && offering?.departmentId === hodDeptId);
+    }
+    return true;
+  });
+
+  const scopedPendingSpecialEvents = specialAttendanceEvents.filter(e => {
+    if (e.status !== 'PENDING_PRINCIPAL' && e.status !== 'FORWARDED_TO_PRINCIPAL') return false;
+    if (isHOD) {
+      return Boolean(hodDeptId && (e.departmentId === hodDeptId || e.forwardedByHodId === user?.id));
+    }
+    return true;
+  });
 
   return (
     <div className="space-y-6">
@@ -805,7 +863,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
 
           {can(activeRole, 'reports', 'export_csv') && (
             <button
-              onClick={() => exportAttendanceReportToCsv()}
+              onClick={() =>
+                exportAttendanceReportToCsv(
+                  hodDeptId
+                    ? `NSS_Attendance_${departments.find(d => d.id === hodDeptId)?.code || 'Dept'}.csv`
+                    : 'NSS_College_Attendance_Report.csv',
+                  hodDeptId ? { departmentId: hodDeptId } : undefined
+                )
+              }
               className="w-full sm:w-auto px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all min-h-[38px]"
             >
               <Download className="w-3.5 h-3.5 shrink-0" /> Export CSV
@@ -827,7 +892,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
       {/* Institutional KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
-          title="Campus Attendance"
+          title={isHOD ? 'Department Attendance' : 'Campus Attendance'}
           value={institutionalAvg}
           icon={<CalendarCheck className="w-5 h-5" />}
           color={hasAttendanceData ? "emerald" : "blue"}
@@ -840,14 +905,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
           color="blue"
         />
         <StatCard
-          title="Enrolled Students"
+          title={isHOD ? 'Dept Students' : 'Enrolled Students'}
           value={totalStudentsCount}
           icon={<GraduationCap className="w-5 h-5" />}
           color="purple"
         />
         <StatCard
           title="Pending Corrections"
-          value={correctionRequests.filter(c => c.status === 'PENDING').length}
+          value={scopedPendingCorrections.length}
           subtitle="Pending approval"
           icon={<AlertTriangle className="w-5 h-5" />}
           color="amber"
@@ -856,7 +921,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
         {['PRINCIPAL', 'HOD', 'SUPER_ADMIN'].includes(activeRole) && (
           <StatCard
             title="Special Duty Approvals"
-            value={specialAttendanceEvents.filter(e => e.status === 'PENDING_PRINCIPAL' || e.status === 'FORWARDED_TO_PRINCIPAL').length}
+            value={scopedPendingSpecialEvents.length}
             subtitle={activeRole === 'PRINCIPAL' ? "Awaiting your sanction" : "Forwarded to Principal"}
             icon={<ShieldCheck className="w-5 h-5" />}
             color="emerald"
@@ -1177,7 +1242,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
         scheduledClasses={teacherScheduledClasses}
         onOpenSessionForClass={handleOpenAttendanceForScheduledClass}
         onOpenSubstituteModal={() => setIsSubstituteOpen(true)}
-        onExportCsv={() => exportAttendanceReportToCsv()}
+        onExportCsv={() =>
+          exportAttendanceReportToCsv(
+            hodDeptId
+              ? `NSS_Attendance_${departments.find(d => d.id === hodDeptId)?.code || 'Dept'}.csv`
+              : 'NSS_College_Attendance_Report.csv',
+            hodDeptId ? { departmentId: hodDeptId } : undefined
+          )
+        }
       />
     </div>
   );

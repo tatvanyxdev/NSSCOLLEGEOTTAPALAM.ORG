@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { useCollegeData } from '../../contexts/CollegeDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { can } from '../../config/permissions';
-import { Modal, Badge } from '../common/UIComponents';
-import { Department } from '../../types';
+import { Badge, Modal } from '../common/UIComponents';
+import { Department, DepartmentAttendancePolicy } from '../../types';
 import {
   Building2,
   Plus,
@@ -12,7 +12,9 @@ import {
   Users,
   GraduationCap,
   Sparkles,
-  BookOpen
+  BookOpen,
+  ShieldAlert,
+  Clock
 } from 'lucide-react';
 
 export const DepartmentsView: React.FC = () => {
@@ -26,18 +28,23 @@ export const DepartmentsView: React.FC = () => {
     toggleDepartmentStatus
   } = useCollegeData();
 
-  const { activeRole } = useAuth();
+  const { user, activeRole } = useAuth();
   const canCreate = can(activeRole, 'departments', 'create');
   const canUpdate = can(activeRole, 'departments', 'update');
+  const currentFaculty = faculty.find(f => f.id === user?.id || (user?.email && f.email?.toLowerCase() === user.email.toLowerCase()));
+  const hodDeptId = activeRole === 'HOD' ? (user?.departmentId || currentFaculty?.departmentId) : undefined;
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingDept, setEditingDept] = useState<Department | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [togglingPolicyId, setTogglingPolicyId] = useState<string | null>(null);
+  const [policyNotice, setPolicyNotice] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [hodFacultyId, setHodFacultyId] = useState('');
+  const [attendancePolicy, setAttendancePolicy] = useState<DepartmentAttendancePolicy>('HOUR_WISE');
 
   const handleOpenAdd = () => {
     if (!canCreate) return;
@@ -46,6 +53,7 @@ export const DepartmentsView: React.FC = () => {
     setName('');
     setCode('');
     setHodFacultyId('');
+    setAttendancePolicy('HOUR_WISE');
     setIsModalOpen(true);
   };
 
@@ -56,7 +64,31 @@ export const DepartmentsView: React.FC = () => {
     setName(dept.name);
     setCode(dept.code);
     setHodFacultyId(dept.hodFacultyId || '');
+    setAttendancePolicy(dept.attendancePolicy === 'SESSION_STRICT' ? 'SESSION_STRICT' : 'HOUR_WISE');
     setIsModalOpen(true);
+  };
+
+  const handleToggleAttendancePolicy = async (dept: Department) => {
+    const canToggleThis =
+      canUpdate || (activeRole === 'HOD' && (hodDeptId === dept.id || dept.hodFacultyId === user?.id || dept.hodFacultyId === currentFaculty?.id));
+    if (!canToggleThis) return;
+
+    const nextPolicy: DepartmentAttendancePolicy =
+      dept.attendancePolicy === 'SESSION_STRICT' ? 'HOUR_WISE' : 'SESSION_STRICT';
+
+    setTogglingPolicyId(dept.id);
+    const res = await updateDepartment(dept.id, { attendancePolicy: nextPolicy });
+    setTogglingPolicyId(null);
+
+    if (res.success) {
+      setErrorMessage(null);
+      setPolicyNotice(
+        `${dept.name} switched to ${nextPolicy === 'SESSION_STRICT' ? 'Strict Half-Day Penalty (FN/AN)' : 'Liberal Hour-Wise'} mode. All student percentages updated dynamically without altering period logs.`
+      );
+      setTimeout(() => setPolicyNotice(null), 4500);
+    } else {
+      setErrorMessage(res.error || 'Failed to update department attendance policy.');
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -75,7 +107,8 @@ export const DepartmentsView: React.FC = () => {
       res = await updateDepartment(editingDept.id, {
         name,
         code: code.toUpperCase(),
-        hodFacultyId: hodFacultyId || undefined
+        hodFacultyId: hodFacultyId || undefined,
+        attendancePolicy
       });
     } else {
       if (!canCreate) {
@@ -86,6 +119,7 @@ export const DepartmentsView: React.FC = () => {
         name,
         code: code.toUpperCase(),
         hodFacultyId: hodFacultyId || undefined,
+        attendancePolicy,
         isActive: true
       });
     }
@@ -121,6 +155,33 @@ export const DepartmentsView: React.FC = () => {
         )}
       </div>
 
+      {/* Dynamic Recalculation Notice */}
+      {policyNotice && (
+        <div className="p-3.5 bg-indigo-50 border border-indigo-200 rounded-xl text-xs text-indigo-900 font-medium flex items-center justify-between gap-2">
+          <span>{policyNotice}</span>
+          <button
+            type="button"
+            onClick={() => setPolicyNotice(null)}
+            className="text-indigo-700 font-bold text-xs cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {errorMessage && !isModalOpen && (
+        <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 font-medium flex items-center justify-between gap-2">
+          <span>{errorMessage}</span>
+          <button
+            type="button"
+            onClick={() => setErrorMessage(null)}
+            className="text-rose-700 font-bold text-xs cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {departments.map(dept => {
@@ -128,6 +189,9 @@ export const DepartmentsView: React.FC = () => {
           const deptFaculty = faculty.filter(f => f.departmentId === dept.id);
           const deptStudents = students.filter(s => s.homeDepartmentId === dept.id);
           const hod = faculty.find(f => f.id === dept.hodFacultyId);
+          const isStrict = dept.attendancePolicy === 'SESSION_STRICT';
+          const canTogglePolicy =
+            canUpdate || (activeRole === 'HOD' && (hodDeptId === dept.id || dept.hodFacultyId === user?.id || dept.hodFacultyId === currentFaculty?.id));
 
           return (
             <div
@@ -139,13 +203,32 @@ export const DepartmentsView: React.FC = () => {
               }`}
             >
               <div>
-                <div className="flex items-start justify-between">
+                <div className="flex items-start justify-between gap-2">
                   <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-700 font-black flex items-center justify-center text-xs border border-blue-100 font-mono">
                     {dept.code}
                   </div>
-                  <Badge variant={dept.isActive ? 'success' : 'outline'} size="sm">
-                    {dept.isActive ? 'Active' : 'Disabled'}
-                  </Badge>
+                  <div className="flex flex-wrap items-center justify-end gap-1.5">
+                    <span
+                      className={`px-2 py-0.5 rounded-md text-[10px] font-bold border inline-flex items-center gap-1 ${
+                        isStrict
+                          ? 'bg-amber-50 text-amber-800 border-amber-200'
+                          : 'bg-blue-50 text-blue-800 border-blue-200'
+                      }`}
+                    >
+                      {isStrict ? (
+                        <>
+                          <ShieldAlert className="w-3 h-3" /> Session Half-Day Rule
+                        </>
+                      ) : (
+                        <>
+                          <Clock className="w-3 h-3" /> Hour-Wise Policy
+                        </>
+                      )}
+                    </span>
+                    <Badge variant={dept.isActive ? 'success' : 'outline'} size="sm">
+                      {dept.isActive ? 'Active' : 'Disabled'}
+                    </Badge>
+                  </div>
                 </div>
 
                 <h4 className="text-base font-bold text-slate-900 mt-3">{dept.name}</h4>
@@ -169,6 +252,38 @@ export const DepartmentsView: React.FC = () => {
                     <p className="text-[10px] text-slate-400 font-semibold uppercase">Students</p>
                     <p className="font-bold text-slate-800 text-sm mt-0.5">{deptStudents.length}</p>
                   </div>
+                </div>
+
+                {/* Department Attendance Calculation Policy Toggle */}
+                <div className="mt-3.5 p-3 rounded-xl bg-slate-50 border border-slate-200/80 space-y-1.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <label
+                      htmlFor={`policy-toggle-${dept.id}`}
+                      className={`text-xs font-bold text-slate-800 leading-snug ${canTogglePolicy ? 'cursor-pointer' : ''}`}
+                    >
+                      Strict Half-Day Penalty (Missing 1 period in FN/AN cuts half-day attendance)
+                    </label>
+                    <button
+                      id={`policy-toggle-${dept.id}`}
+                      type="button"
+                      role="switch"
+                      aria-checked={isStrict}
+                      disabled={!canTogglePolicy || togglingPolicyId === dept.id}
+                      onClick={() => handleToggleAttendancePolicy(dept)}
+                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                        isStrict ? 'bg-amber-600' : 'bg-slate-300'
+                      } ${canTogglePolicy ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          isStrict ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Toggling this dynamically recalculates overall student percentages without losing period-level data. Subject-wise percentages always remain Hour-Wise.
+                  </p>
                 </div>
               </div>
 
@@ -250,6 +365,42 @@ export const DepartmentsView: React.FC = () => {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-800 block">
+                    Strict Half-Day Penalty (Missing 1 period in FN/AN cuts half-day attendance)
+                  </label>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Dynamically recalculates overall percentages without losing period-level logs.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={attendancePolicy === 'SESSION_STRICT'}
+                  onClick={() =>
+                    setAttendancePolicy(prev => (prev === 'SESSION_STRICT' ? 'HOUR_WISE' : 'SESSION_STRICT'))
+                  }
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
+                    attendancePolicy === 'SESSION_STRICT' ? 'bg-amber-600' : 'bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                      attendancePolicy === 'SESSION_STRICT' ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+              <div className="text-[11px] font-semibold text-slate-700">
+                Selected Mode:{' '}
+                <span className={attendancePolicy === 'SESSION_STRICT' ? 'text-amber-700' : 'text-blue-700'}>
+                  {attendancePolicy === 'SESSION_STRICT' ? 'Session Half-Day Rule (SESSION_STRICT)' : 'Hour-Wise Rule (HOUR_WISE)'}
+                </span>
+              </div>
             </div>
 
             {errorMessage && (

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { usePersonalizedCollege } from '../../contexts/PersonalizedCollegeContext';
 import { useCollegeData } from '../../contexts/CollegeDataContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { EmergencyAlertBanner } from '../common/EmergencyAlertBanner';
 import { TodayTimetableWidget } from '../timetable/TodayTimetableWidget';
 import {
@@ -46,6 +47,8 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
   } = usePersonalizedCollege();
 
   const { students, programmes, departments, settings } = useCollegeData();
+  const { user, activeRole } = useAuth();
+  const canSwitchStudent = Boolean(user?.isDemoRole || activeRole === 'SUPER_ADMIN');
 
   const [isSwitchStudentOpen, setIsSwitchStudentOpen] = useState(false);
   const [isDigitalIdOpen, setIsDigitalIdOpen] = useState(false);
@@ -58,16 +61,20 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
           <GraduationCap className="w-12 h-12 text-rose-900 mx-auto mb-3" />
           <h2 className="text-xl font-bold text-slate-900">Student Profile Not Linked</h2>
           <p className="text-sm text-slate-600 mt-2 max-w-md mx-auto">
-            Your login is not currently bound to an enrolled student profile. Please select your student record from the registered institutional database to access your personalized portal.
+            {canSwitchStudent
+              ? 'Your login is not currently bound to an enrolled student profile. Select a student record below to preview the student portal.'
+              : 'Your login is not currently bound to an enrolled student profile. Please contact your Department HOD or Administrative Office to link your register number.'}
           </p>
-          <div className="mt-6 flex justify-center">
-            <button
-              onClick={() => setIsSwitchStudentOpen(true)}
-              className="px-4 py-2.5 bg-rose-900 text-white rounded-xl text-xs font-bold hover:bg-rose-950 transition-colors shadow-xs"
-            >
-              Select Enrolled Student Record
-            </button>
-          </div>
+          {canSwitchStudent && (
+            <div className="mt-6 flex justify-center">
+              <button
+                onClick={() => setIsSwitchStudentOpen(true)}
+                className="px-4 py-2.5 bg-rose-900 text-white rounded-xl text-xs font-bold hover:bg-rose-950 transition-colors shadow-xs"
+              >
+                Select Enrolled Student Record
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -109,14 +116,16 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
               FYUGP Semester {currentStudent.currentSemester || 1} Enrolled
             </span>
           </div>
-          <button
-            onClick={() => setIsSwitchStudentOpen(true)}
-            className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-white text-[10px] sm:text-[11px] font-medium rounded-lg transition-colors flex items-center gap-1 border border-white/15 ml-auto sm:ml-0"
-            title="Switch authentic student account for demonstration"
-          >
-            <RefreshCw className="w-3 h-3" />
-            Switch Student
-          </button>
+          {canSwitchStudent && (
+            <button
+              onClick={() => setIsSwitchStudentOpen(true)}
+              className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-white text-[10px] sm:text-[11px] font-medium rounded-lg transition-colors flex items-center gap-1 border border-white/15 ml-auto sm:ml-0"
+              title="Switch student preview account"
+            >
+              <RefreshCw className="w-3 h-3" />
+              Switch Student
+            </button>
+          )}
         </div>
 
         <div className="px-4 sm:px-6 pb-5 sm:pb-6 pt-0 relative">
@@ -306,19 +315,30 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
           {/* Attendance Radar & Intelligence */}
           {attendanceIntelligence && (
             <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-5 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <span className="p-1.5 bg-emerald-50 text-emerald-800 rounded-lg">
                     <Award className="w-4 h-4" />
                   </span>
                   <div>
                     <h3 className="font-bold text-slate-900 text-sm">Attendance Radar</h3>
-                    <span className="text-[11px] text-slate-500">Min. Req: {settings.minAttendancePercentage}%</span>
+                    <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                      <span className="text-[11px] text-slate-500">Min. Req: {settings.minAttendancePercentage}%</span>
+                      <span
+                        className={`px-1.5 py-0.5 text-[10px] font-bold rounded border ${
+                          attendanceIntelligence.attendancePolicy === 'SESSION_STRICT'
+                            ? 'bg-amber-50 text-amber-900 border-amber-200'
+                            : 'bg-blue-50 text-blue-800 border-blue-200'
+                        }`}
+                      >
+                        {attendanceIntelligence.policyLabel}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
                 <span
-                  className={`px-2 py-0.5 text-[11px] font-bold rounded-md ${
+                  className={`px-2 py-0.5 text-[11px] font-bold rounded-md shrink-0 ${
                     attendanceIntelligence.totalConducted === 0
                       ? 'bg-slate-100 text-slate-600'
                       : attendanceIntelligence.isShortage
@@ -349,20 +369,50 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
                     <div className="flex items-center justify-between">
                       <div>
                         <span className="text-3xl font-black tracking-tight text-slate-900">
-                          {attendanceIntelligence.consolidatedPercentage || attendanceIntelligence.overallPercentage}%
+                          {attendanceIntelligence.overallPercentage}%
                         </span>
                         <p className="text-xs text-slate-500 mt-0.5">
-                          Consolidated Official Attendance
+                          {attendanceIntelligence.attendancePolicy === 'SESSION_STRICT'
+                            ? 'Session Half-Day Official Attendance'
+                            : 'Consolidated Official Attendance'}
                         </p>
                       </div>
 
                       <div className="text-right text-xs">
-                        <span className="text-slate-400 block font-medium">Class Hours</span>
-                        <span className="font-bold text-slate-800 font-mono">
-                          {attendanceIntelligence.totalPresent + attendanceIntelligence.totalOd + (attendanceIntelligence.specialDutyApprovedCount || 0)} / {attendanceIntelligence.totalConducted}
-                        </span>
+                        {attendanceIntelligence.attendancePolicy === 'SESSION_STRICT' ? (
+                          <>
+                            <span className="text-slate-400 block font-medium">Working Days</span>
+                            <span className="font-bold text-slate-800 font-mono">
+                              {attendanceIntelligence.awardedDays} / {attendanceIntelligence.totalWorkingDays}
+                            </span>
+                            <span className="text-[10px] text-slate-500 block font-mono">
+                              ({attendanceIntelligence.totalPresent + attendanceIntelligence.totalDutyLeave}/{attendanceIntelligence.totalConducted} hrs)
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-slate-400 block font-medium">Class Hours</span>
+                            <span className="font-bold text-slate-800 font-mono">
+                              {attendanceIntelligence.totalPresent + attendanceIntelligence.totalDutyLeave} / {attendanceIntelligence.totalConducted}
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
+
+                    {attendanceIntelligence.attendancePolicy === 'SESSION_STRICT' && (
+                      <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-white border border-slate-200/80 text-[11px]">
+                        <span className="text-slate-600 font-medium">Hour-Wise Equivalent</span>
+                        <span className="font-bold font-mono text-slate-900">
+                          {attendanceIntelligence.hourWisePercentage}%
+                          {attendanceIntelligence.halfDaysLost > 0 && (
+                            <span className="text-rose-700 ml-1.5">
+                              (-{(attendanceIntelligence.halfDaysLost * 0.5).toFixed(1)}d penalty)
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    )}
 
                     {/* Breakdown Pills: Regular vs Special Duty */}
                     <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/60 text-[11px]">
@@ -373,9 +423,9 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
                         </span>
                       </div>
                       <div className="bg-amber-50/70 p-2 rounded-lg border border-amber-200/60">
-                        <span className="text-amber-800 block font-semibold">Union / Special Duty:</span>
+                        <span className="text-amber-800 block font-semibold">Duty Leave / Special:</span>
                         <span className="font-bold text-amber-900">
-                          +{attendanceIntelligence.specialDutyApprovedCount || 0} hrs sanctioned
+                          +{attendanceIntelligence.totalDutyLeave} hrs credited
                         </span>
                       </div>
                     </div>
@@ -389,6 +439,44 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
                       </div>
                     )}
                   </div>
+
+                  {/* Half-Day Penalty Transparent Warning Breakdown */}
+                  {attendanceIntelligence.attendancePolicy === 'SESSION_STRICT' &&
+                    attendanceIntelligence.halfDayPenalties.length > 0 && (
+                      <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200 space-y-2 text-[11px]">
+                        <div className="flex items-start gap-2 text-amber-950">
+                          <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                          <div>
+                            <p className="font-bold">
+                              Half-Day Penalty Impact: {attendanceIntelligence.halfDaysLost} session(s) lost (-
+                              {(attendanceIntelligence.halfDaysLost * 0.5).toFixed(1)} working days)
+                            </p>
+                            <p className="text-amber-800 mt-0.5 leading-snug">
+                              Under Session Half-Day Rule, missing even 1 period in FN or AN cuts the 0.5 day credit.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="space-y-1 max-h-32 overflow-y-auto pr-0.5">
+                          {attendanceIntelligence.halfDayPenalties.slice(0, 5).map(p => (
+                            <div
+                              key={`${p.date}-${p.session}`}
+                              className="flex items-center justify-between gap-2 bg-white/90 px-2 py-1 rounded-lg border border-amber-200/70 text-[10px]"
+                            >
+                              <div className="min-w-0">
+                                <span className="font-mono font-bold text-slate-800">{p.date}</span>{' '}
+                                <span className="font-bold text-amber-900">
+                                  · {p.session === 'FN' ? 'FN (Morning)' : 'AN (Afternoon)'}
+                                </span>
+                                <span className="block text-slate-600 truncate">
+                                  Absent in {p.absentPeriodLabels.join(', ')} ({p.coursesAffected.join(', ')})
+                                </span>
+                              </div>
+                              <span className="font-mono font-bold text-rose-700 shrink-0">-0.5d</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                   {/* Attendance Guidance / Intelligence Message */}
                   <div
@@ -404,7 +492,10 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
                         <p>
                           <strong>Action Required:</strong> You must attend{' '}
                           <span className="font-bold underline">
-                            {attendanceIntelligence.classesNeededToMeetMin} consecutive classes
+                            {attendanceIntelligence.classesNeededToMeetMin} consecutive{' '}
+                            {attendanceIntelligence.attendancePolicy === 'SESSION_STRICT'
+                              ? 'FN/AN half-day session(s)'
+                              : 'classes'}
                           </span>{' '}
                           without absence to recover above the university {settings.minAttendancePercentage}% examination threshold.
                         </p>
@@ -415,7 +506,10 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
                         <p>
                           <strong>Safe Margin:</strong> You can miss up to{' '}
                           <span className="font-bold">
-                            {attendanceIntelligence.classesCanMissSafely} class hours
+                            {attendanceIntelligence.classesCanMissSafely}{' '}
+                            {attendanceIntelligence.attendancePolicy === 'SESSION_STRICT'
+                              ? 'FN/AN half-day session(s)'
+                              : 'class hours'}
                           </span>{' '}
                           without dropping below {settings.minAttendancePercentage}%.
                         </p>
@@ -425,9 +519,12 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
 
                   {/* Subject Breakdown Progress */}
                   <div className="space-y-2.5 pt-2">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 block">
-                      Subject-Wise Standings
-                    </span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 block">
+                        Subject-Wise Standings
+                      </span>
+                      <span className="text-[10px] font-medium text-slate-500">Always Hour-Wise</span>
+                    </div>
                     {attendanceIntelligence.courseSummaries.slice(0, 4).map(cs => (
                       <div key={cs.courseId} className="space-y-1">
                         <div className="flex justify-between text-xs font-medium text-slate-700">
@@ -570,8 +667,8 @@ export const StudentPersonalizedHome: React.FC<StudentPersonalizedHomeProps> = (
         </div>
       </div>
 
-      {/* Switch Student Modal */}
-      {isSwitchStudentOpen && (
+      {/* Switch Student Modal (Demo / Super Admin Preview Only) */}
+      {isSwitchStudentOpen && canSwitchStudent && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">

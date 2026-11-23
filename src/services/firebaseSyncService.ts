@@ -210,8 +210,12 @@ export const firebaseSyncService = {
     fullName: string;
     regularPercentage: number;
     consolidatedPercentage: number;
+    hourWisePercentage?: number;
+    attendancePolicy?: 'HOUR_WISE' | 'SESSION_STRICT';
     totalConducted: number;
     totalPresent: number;
+    totalWorkingDays?: number;
+    awardedDays?: number;
     specialDutyApprovedCount: number;
     specialDutyPendingCount: number;
   }): Promise<boolean> {

@@ -38,8 +38,13 @@ import {
   FacultyAssignmentHistory,
   CourseType,
   SubjectRequestStatus,
-  UserRole
+  UserRole,
+  DepartmentAttendancePolicy
 } from '../types';
+import {
+  calculateStudentDualAttendance,
+  DualAttendanceSummary
+} from '../utils/dualAttendanceEngine';
 import {
   initialSystemSettings,
   initialDepartments,
@@ -90,7 +95,8 @@ import { auditLogService } from '../services/auditLogService';
 import { facultySubjectService } from '../services/facultySubjectService';
 import { firebaseSyncService } from '../services/firebaseSyncService';
 import { pushNotificationService } from '../services/pushNotificationService';
-import { supabase } from '../lib/supabase';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { can, canManageDepartmentScope } from '../config/permissions';
 
 export type SyncStatus = 'CONNECTED' | 'SYNCING' | 'PARTIAL' | 'OFFLINE';
 
@@ -348,39 +354,14 @@ interface CollegeDataContextType {
   addAuditLog: (action: string, entityType: string, entityId: string, newData?: any, oldData?: any) => void;
 
   // Analytical Helpers
-  getStudentAttendanceSummary: (studentId: string) => {
-    overallPercentage: number;
-    regularPercentage: number;
-    consolidatedPercentage: number;
-    totalConducted: number;
-    totalPresent: number;
-    totalOd: number;
-    totalMedicalLeave: number;
-    totalAbsent: number;
-    specialDutyApprovedCount: number;
-    specialDutyPendingCount: number;
-    consolidatedTotalAttended: number;
-    isShortage: boolean;
-    isWarning: boolean;
-    courses: CourseAttendanceSummary[];
-    studentSpecialEvents?: Array<{
-      id: string;
-      title: string;
-      eventType: SpecialAttendanceEventType;
-      eventDate: string;
-      isFullDay: boolean;
-      dutyCertificateRef?: string;
-      reason: string;
-      status: SpecialAttendanceStatus;
-      periodsCount: number;
-      forwardedByHodName?: string;
-      approvedByName?: string;
-      principalRemarks?: string;
-    }>;
-  };
+  getStudentAttendanceSummary: (studentId: string) => DualAttendanceSummary;
 
   getCourseGroupRegisteredStudents: (courseGroupId: string) => (Student & { registrationCategory: CourseCategory | undefined })[];
   getPendingAttendanceSessions: (facultyId?: string, departmentId?: string) => ClassSession[];
+  exportAttendanceReportToCsv: (
+    filename?: string,
+    options?: { departmentId?: string; studentIds?: string[] }
+  ) => void;
   resetToDefaultData: (wipeSupabaseTestData?: boolean) => Promise<void> | void;
 }
 
@@ -478,7 +459,7 @@ if (typeof window !== 'undefined') {
 }
 
 export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
+  const { user, activeRole } = useAuth();
 
   // Initialize state from LocalStorage or initial seeded data
   const [settings, setSettings] = useState<SystemSettings>(() => {
@@ -488,7 +469,18 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const [departments, setDepartments] = useState<Department[]>(() => {
     const saved = localStorage.getItem(`${STORAGE_PREFIX}departments`);
-    return saved ? JSON.parse(saved) : initialDepartments;
+    const base: Department[] = saved ? JSON.parse(saved) : initialDepartments;
+    let policyOverrides: Record<string, DepartmentAttendancePolicy> = {};
+    try {
+      const rawOverrides = localStorage.getItem(`${STORAGE_PREFIX}dept_attendance_policies`);
+      if (rawOverrides) policyOverrides = JSON.parse(rawOverrides);
+    } catch {
+      // ignore
+    }
+    return base.map(d => ({
+      ...d,
+      attendancePolicy: policyOverrides[d.id] || d.attendancePolicy || 'HOUR_WISE'
+    }));
   });
 
   const [programmes, setProgrammes] = useState<Programme[]>(() => {
@@ -876,7 +868,21 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           health.departments = 'error';
           errorCount++;
         } else if (deptRes.value.data && deptRes.value.data.length > 0) {
-          setDepartments(deptRes.value.data);
+          let policyOverrides: Record<string, DepartmentAttendancePolicy> = {};
+          try {
+            const rawOverrides = localStorage.getItem(`${STORAGE_PREFIX}dept_attendance_policies`);
+            if (rawOverrides) policyOverrides = JSON.parse(rawOverrides);
+          } catch {
+            // ignore
+          }
+          const dbHasPolicyColumn = Boolean(deptRes.value.hasPolicyColumn);
+          const mergedDepts = deptRes.value.data.map(d => ({
+            ...d,
+            attendancePolicy: dbHasPolicyColumn
+              ? (d.attendancePolicy || 'HOUR_WISE')
+              : (policyOverrides[d.id] || d.attendancePolicy || 'HOUR_WISE')
+          }));
+          setDepartments(mergedDepts);
           health.departments = 'ok';
           successCount++;
         } else {
@@ -1378,8 +1384,31 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     });
   };
 
+  const resolveActorContext = () => {
+    const matchedFac = faculty.find(
+      f =>
+        f.id === user?.id ||
+        f.id === user?.facultyProfile?.id ||
+        (user?.email && f.email && f.email.toLowerCase() === user.email.toLowerCase()) ||
+        (f.username && user?.name && f.username.toLowerCase() === user.name.toLowerCase())
+    );
+    const effectiveFacultyId = matchedFac?.id || user?.facultyProfile?.id || user?.id || '';
+    const hodOwnedDeptId = departments.find(
+      d => d.hodFacultyId && (d.hodFacultyId === effectiveFacultyId || d.hodFacultyId === user?.id)
+    )?.id;
+    const effectiveDepartmentId =
+      user?.departmentId ||
+      user?.facultyProfile?.departmentId ||
+      matchedFac?.departmentId ||
+      hodOwnedDeptId;
+    return { matchedFac, effectiveFacultyId, effectiveDepartmentId };
+  };
+
   // Settings
   const updateSettings = async (newSettings: Partial<SystemSettings>): Promise<{ success: boolean; error?: string }> => {
+    if (!can(activeRole, 'settings', 'update')) {
+      return { success: false, error: 'Unauthorized: Only Super Administrators may update institutional settings.' };
+    }
     const old = { ...settings };
     const res = await settingsService.updateSettings(newSettings);
     if (!res.success) {
@@ -1392,12 +1421,31 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   // Departments
+  const persistDeptPolicyOverride = (deptId: string, policy?: DepartmentAttendancePolicy) => {
+    if (!policy) return;
+    try {
+      const raw = localStorage.getItem(`${STORAGE_PREFIX}dept_attendance_policies`);
+      const map: Record<string, DepartmentAttendancePolicy> = raw ? JSON.parse(raw) : {};
+      map[deptId] = policy;
+      localStorage.setItem(`${STORAGE_PREFIX}dept_attendance_policies`, JSON.stringify(map));
+    } catch {
+      // ignore
+    }
+  };
+
   const addDepartment = async (dept: Omit<Department, 'id'>): Promise<{ success: boolean; data?: Department; error?: string }> => {
+    if (!can(activeRole, 'departments', 'create')) {
+      return { success: false, error: 'Unauthorized: Only Administrators may create departments.' };
+    }
     const res = await departmentService.createDepartment(dept);
     if (res.error || !res.data) {
       return { success: false, error: res.error?.message || 'Failed to create department in database.' };
     }
-    const created = res.data;
+    const created: Department = {
+      ...res.data,
+      attendancePolicy: dept.attendancePolicy || res.data.attendancePolicy || 'HOUR_WISE'
+    };
+    persistDeptPolicyOverride(created.id, created.attendancePolicy);
     setDepartments(prev => [...prev, created]);
     addAuditLog('CREATE_DEPARTMENT', 'DEPARTMENT', created.id, created);
     return { success: true, data: created };
@@ -1405,9 +1453,31 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const updateDepartment = async (id: string, dept: Partial<Department>): Promise<{ success: boolean; error?: string }> => {
     const prevDept = departments.find(d => d.id === id);
+    if (!prevDept) return { success: false, error: 'Department not found.' };
+
+    const { effectiveFacultyId, effectiveDepartmentId } = resolveActorContext();
+    const isAdminDeptEditor = can(activeRole, 'departments', 'update');
+    if (!isAdminDeptEditor) {
+      const ownsDept =
+        activeRole === 'HOD' &&
+        (canManageDepartmentScope('HOD', effectiveDepartmentId, id) ||
+          (prevDept.hodFacultyId &&
+            (prevDept.hodFacultyId === effectiveFacultyId || prevDept.hodFacultyId === user?.id)));
+      if (!ownsDept) {
+        return { success: false, error: 'Unauthorized: HODs can only configure policy for their own department.' };
+      }
+      const touchedKeys = Object.keys(dept);
+      if (touchedKeys.length === 0 || touchedKeys.some(k => k !== 'attendancePolicy')) {
+        return { success: false, error: 'Unauthorized: HODs may only toggle department Attendance Policy.' };
+      }
+    }
+
     const res = await departmentService.updateDepartment(id, dept);
     if (!res.success) {
       return { success: false, error: res.error?.message || 'Failed to update department in database.' };
+    }
+    if (dept.attendancePolicy) {
+      persistDeptPolicyOverride(id, dept.attendancePolicy);
     }
     setDepartments(prev => prev.map(d => (d.id === id ? { ...d, ...dept } : d)));
     addAuditLog('UPDATE_DEPARTMENT', 'DEPARTMENT', id, { ...prevDept, ...dept }, prevDept);
@@ -1415,6 +1485,9 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const toggleDepartmentStatus = async (id: string): Promise<{ success: boolean; error?: string }> => {
+    if (!can(activeRole, 'departments', 'update')) {
+      return { success: false, error: 'Unauthorized: Only Administrators may toggle department active status.' };
+    }
     const target = departments.find(d => d.id === id);
     if (!target) return { success: false, error: 'Department not found.' };
     const newStatus = !target.isActive;
@@ -2369,6 +2442,12 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // Timetable Periods
   const updateTimetablePeriods = async (periods: TimetablePeriod[]): Promise<{ success: boolean; error?: string }> => {
+    if (activeRole !== 'SUPER_ADMIN' && activeRole !== 'PRINCIPAL') {
+      return {
+        success: false,
+        error: 'Unauthorized: Only Super Administrators or Principal can update period slots and FN/AN session mappings.'
+      };
+    }
     const res = await timetableService.updatePeriods(periods);
     if (!res.success) {
       return { success: false, error: res.error?.message || 'Failed to save timetable periods to database.' };
@@ -2446,15 +2525,74 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     records: { studentId: string; status: AttendanceStatus; remarks?: string }[],
     topicCovered?: string
   ): Promise<{ success: boolean; error?: string }> => {
-    const facultyId = user?.id || 'fac-1';
-    const actorName = user?.name || 'Faculty';
-    const actorRole = user?.activeRole || 'TEACHER';
+    const targetSession = classSessions.find(s => s.id === classSessionId);
+    if (!targetSession) {
+      return { success: false, error: 'Class session not found.' };
+    }
+
+    const { matchedFac, effectiveFacultyId, effectiveDepartmentId } = resolveActorContext();
+    const actorName = matchedFac?.fullName || user?.name || 'Faculty';
+    const actorRole = activeRole || user?.activeRole || 'TEACHER';
+    const sessionOffering = courseOfferings.find(o => o.id === targetSession.courseOfferingId);
+
+    const isPrivileged =
+      actorRole === 'SUPER_ADMIN' ||
+      actorRole === 'PRINCIPAL' ||
+      actorRole === 'ATTENDANCE_COORDINATOR';
+    const isHodOfDept =
+      actorRole === 'HOD' &&
+      canManageDepartmentScope('HOD', effectiveDepartmentId, sessionOffering?.departmentId);
+
+    if (!isPrivileged && !isHodOfDept) {
+      if (!can(actorRole, 'attendance', 'mark_assigned') && !can(actorRole, 'attendance', 'mark_department')) {
+        return { success: false, error: 'Unauthorized: Your role cannot mark period attendance.' };
+      }
+
+      if (!user?.isDemoRole || matchedFac) {
+        const isAssignedFaculty =
+          targetSession.facultyId === effectiveFacultyId ||
+          targetSession.substituteFacultyId === effectiveFacultyId ||
+          facultyAssignments.some(
+            fa =>
+              fa.facultyId === effectiveFacultyId &&
+              fa.courseGroupId === targetSession.courseGroupId &&
+              fa.isActive !== false
+          );
+        if (!isAssignedFaculty) {
+          return {
+            success: false,
+            error: 'Unauthorized: You are not assigned or designated as a substitute for this class session.'
+          };
+        }
+      }
+
+      // Enforce correction window when editing an already-submitted session
+      if (
+        targetSession.attendanceSubmitted &&
+        settings.requireHodApprovalForCorrection &&
+        !settings.allowTeacherDirectEdit
+      ) {
+        const windowHours = Number(settings.attendanceCorrectionWindowHours ?? 24);
+        const submittedMs = targetSession.submittedTimestamp ? Date.parse(targetSession.submittedTimestamp) : NaN;
+        const elapsedHours = Number.isFinite(submittedMs) ? (Date.now() - submittedMs) / 3600000 : Infinity;
+        if (elapsedHours > windowHours) {
+          return {
+            success: false,
+            error: `Correction window (${windowHours}h) has expired. Please submit an Attendance Correction Request for HOD approval.`
+          };
+        }
+      }
+    }
+
+    // Deduplicate by studentId so each atomic period record is unique
+    const dedupedRecords = Array.from(new Map(records.map(r => [r.studentId, r])).values());
+    const facultyIdForDb = effectiveFacultyId || 'fac-1';
 
     // Submit to Supabase database (uses atomic RPC or safe transactional fallback)
     const dbRes = await attendanceService.submitSessionAttendance(
       classSessionId,
-      records,
-      facultyId,
+      dedupedRecords,
+      facultyIdForDb,
       topicCovered,
       actorName,
       actorRole
@@ -2485,13 +2623,13 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       })
     );
 
-    // 2. Update attendance records in local cache
-    const newAttendanceRecords: AttendanceRecord[] = records.map(r => ({
+    // 2. Update attendance records in local cache (strict atomic upsert for this session)
+    const newAttendanceRecords: AttendanceRecord[] = dedupedRecords.map(r => ({
       id: `att-${classSessionId}-${r.studentId}`,
       classSessionId,
       studentId: r.studentId,
       status: r.status,
-      markedByFacultyId: facultyId,
+      markedByFacultyId: facultyIdForDb,
       markedTimestamp: confirmedTimestamp,
       remarks: r.remarks
     }));
@@ -2502,10 +2640,12 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     });
 
     addAuditLog('SUBMIT_ATTENDANCE_CONFIRMED', 'CLASS_SESSION', classSessionId, {
-      totalRecords: records.length,
-      presentCount: records.filter(r => r.status === 'PRESENT').length,
-      absentCount: records.filter(r => r.status === 'ABSENT').length,
-      odCount: records.filter(r => r.status === 'OD').length,
+      totalRecords: dedupedRecords.length,
+      presentCount: dedupedRecords.filter(r => r.status === 'PRESENT').length,
+      absentCount: dedupedRecords.filter(r => r.status === 'ABSENT').length,
+      dutyLeaveCount: dedupedRecords.filter(r => r.status === 'DUTY_LEAVE').length,
+      odCount: dedupedRecords.filter(r => r.status === 'OD').length,
+      cancelledCount: dedupedRecords.filter(r => r.status === 'CANCELLED').length,
       submittedAt: confirmedTimestamp
     });
 
@@ -2546,9 +2686,22 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const targetReq = correctionRequests.find(r => r.id === requestId);
     if (!targetReq) return { success: false, error: 'Correction request not found.' };
 
-    const reviewerFacultyId = user?.id || 'fac-1';
+    const { effectiveFacultyId, effectiveDepartmentId } = resolveActorContext();
     const actorName = user?.name || 'Reviewer';
-    const actorRole = user?.activeRole || 'HOD';
+    const actorRole = activeRole || user?.activeRole || 'HOD';
+
+    if (!can(actorRole, 'attendance', 'approve_correction')) {
+      return { success: false, error: 'Unauthorized: You do not have permission to review attendance corrections.' };
+    }
+    if (actorRole === 'HOD') {
+      const targetSess = classSessions.find(s => s.id === targetReq.classSessionId);
+      const targetOff = courseOfferings.find(o => o.id === targetSess?.courseOfferingId);
+      if (!canManageDepartmentScope('HOD', effectiveDepartmentId, targetOff?.departmentId)) {
+        return { success: false, error: 'Unauthorized: HODs may only review corrections within their own department.' };
+      }
+    }
+
+    const reviewerFacultyId = effectiveFacultyId || 'fac-1';
 
     // Submit review to Supabase via atomic RPC / transactional method
     const res = await attendanceService.reviewCorrection(
@@ -2582,20 +2735,39 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       })
     );
 
-    // 2. If approved, update the actual Attendance Record in local cache
+    // 2. If approved, upsert the Attendance Record in local cache (creates record if student had none)
     if (status === 'APPROVED') {
-      setAttendanceRecords(prev =>
-        prev.map(a => {
-          if (a.classSessionId === targetReq.classSessionId && a.studentId === targetReq.studentId) {
-            return {
-              ...a,
-              status: targetReq.requestedStatus,
-              remarks: `Corrected via Approval (${remarks || 'HOD Approved'})`
-            };
+      setAttendanceRecords(prev => {
+        const exists = prev.some(
+          a => a.classSessionId === targetReq.classSessionId && a.studentId === targetReq.studentId
+        );
+        if (exists) {
+          return prev.map(a => {
+            if (a.classSessionId === targetReq.classSessionId && a.studentId === targetReq.studentId) {
+              return {
+                ...a,
+                status: targetReq.requestedStatus,
+                markedByFacultyId: reviewerFacultyId,
+                markedTimestamp: now,
+                remarks: `Corrected via Approval (${remarks || 'HOD Approved'})`
+              };
+            }
+            return a;
+          });
+        }
+        return [
+          ...prev,
+          {
+            id: `att-${targetReq.classSessionId}-${targetReq.studentId}`,
+            classSessionId: targetReq.classSessionId,
+            studentId: targetReq.studentId,
+            status: targetReq.requestedStatus,
+            markedByFacultyId: reviewerFacultyId,
+            markedTimestamp: now,
+            remarks: `Corrected via Approval (${remarks || 'HOD Approved'})`
           }
-          return a;
-        })
-      );
+        ];
+      });
     }
 
     addAuditLog('REVIEW_CORRECTION_REQUEST', 'CORRECTION_REQUEST', requestId, { status, remarks });
@@ -2780,26 +2952,33 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // Timetable-driven lazy session instantiation
   const getOrCreateSessionForTimetableEntry = async (timetableEntryId: string, date: string): Promise<ClassSession> => {
-    // 1. Check if session already exists in state
+    // 1. Find timetable entry & check overrides first so slot lookup catches moved/active slots too
+    const entry = timetableEntries.find(t => t.id === timetableEntryId);
+    const override = dailyScheduleOverrides.find(
+      o => o.timetableEntryId === timetableEntryId && o.date === date
+    );
+    const resolvedPeriodId = override?.newPeriodId || entry?.periodId;
+
+    // 2. Check if active session already exists in state by timetableEntryId or (courseGroupId, date, periodId)
     const existing = classSessions.find(
-      s => (s.timetableEntryId === timetableEntryId || s.id === timetableEntryId) && s.date === date
+      s =>
+        s.date === date &&
+        ((s.timetableEntryId === timetableEntryId || s.id === timetableEntryId) ||
+          (entry &&
+            resolvedPeriodId &&
+            s.courseGroupId === entry.courseGroupId &&
+            s.periodId === resolvedPeriodId &&
+            s.status !== 'CANCELLED'))
     );
     if (existing) {
       return existing;
     }
 
-    // 2. Find timetable entry
-    const entry = timetableEntries.find(t => t.id === timetableEntryId);
     if (!entry) {
       throw new Error(`Timetable entry ${timetableEntryId} not found`);
     }
 
-    // 3. Check for any daily schedule override for this entry and date
-    const override = dailyScheduleOverrides.find(
-      o => o.timetableEntryId === timetableEntryId && o.date === date
-    );
-
-    const periodId = override?.newPeriodId || entry.periodId;
+    const periodId = resolvedPeriodId || entry.periodId;
     const period = timetablePeriods.find(p => p.id === periodId);
     const facultyId = entry.facultyId;
     const substituteFacultyId = override?.substituteFacultyId;
@@ -2830,6 +3009,10 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       return res.data;
     }
 
+    if (isSupabaseConfigured) {
+      throw new Error(res.error || 'Could not instantiate valid session in Supabase. Please retry.');
+    }
+
     const fallbackSession: ClassSession = {
       ...newSessionData,
       id: res.id || `sess-${Date.now()}`
@@ -2839,12 +3022,21 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const getDailyScheduledClasses = (dateStr: string, filterFacultyId?: string, filterDepartmentId?: string) => {
-    const d = new Date(dateStr);
+    const cleanDate = String(dateStr || '').slice(0, 10);
+    const d = cleanDate ? new Date(`${cleanDate}T00:00:00`) : new Date();
     const dayIndex = d.getDay(); // 0: Sun, 1: Mon, ... 6: Sat
     if (dayIndex === 0) {
       return [];
     }
-    const days: DayOfWeek[] = ['MONDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
+    const days: DayOfWeek[] = [
+      'SUNDAY' as DayOfWeek,
+      'MONDAY',
+      'TUESDAY',
+      'WEDNESDAY',
+      'THURSDAY',
+      'FRIDAY',
+      'SATURDAY'
+    ];
     const currentDayOfWeek = days[dayIndex];
 
     const entriesForDay = timetableEntries.filter(
@@ -3037,18 +3229,41 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       return { success: false, error: 'No matching correction requests found.' };
     }
 
-    const reviewerId = reviewedByFacultyId || user?.id || 'fac-1';
+    const { effectiveFacultyId, effectiveDepartmentId } = resolveActorContext();
+    const actorRole = activeRole || user?.activeRole || 'HOD';
+    if (!can(actorRole, 'attendance', 'approve_correction')) {
+      return { success: false, error: 'Unauthorized: You do not have permission to review correction batches.' };
+    }
+
+    if (actorRole === 'HOD') {
+      const hasUnauthorizedDept = matchingRequests.some(req => {
+        const targetSess = classSessions.find(s => s.id === req.classSessionId);
+        const targetOff = courseOfferings.find(o => o.id === targetSess?.courseOfferingId);
+        return !canManageDepartmentScope('HOD', effectiveDepartmentId, targetOff?.departmentId);
+      });
+      if (hasUnauthorizedDept) {
+        return { success: false, error: 'Unauthorized: HODs may only review correction batches within their department.' };
+      }
+    }
+
+    const reviewerId = reviewedByFacultyId || effectiveFacultyId || 'fac-1';
     const now = new Date().toISOString();
 
     for (const req of matchingRequests) {
-      await attendanceService.reviewCorrection(
+      const res = await attendanceService.reviewCorrection(
         req.id,
         status,
         reviewerId,
         reviewRemarks,
         user?.name || 'Reviewer',
-        user?.activeRole || 'HOD'
+        actorRole
       );
+      if (!res.success) {
+        return {
+          success: false,
+          error: res.error?.message || `Failed to persist correction review for request ${req.id}.`
+        };
+      }
     }
 
     setCorrectionRequests(prev =>
@@ -3067,8 +3282,8 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     );
 
     if (status === 'APPROVED') {
-      setAttendanceRecords(prev =>
-        prev.map(a => {
+      setAttendanceRecords(prev => {
+        const next = prev.map(a => {
           const matchedReq = matchingRequests.find(
             mr => mr.classSessionId === a.classSessionId && mr.studentId === a.studentId
           );
@@ -3076,12 +3291,33 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
             return {
               ...a,
               status: matchedReq.requestedStatus,
+              markedByFacultyId: reviewerId,
+              markedTimestamp: now,
               remarks: `Corrected via Approval (${reviewRemarks || 'HOD Approved'})`
             };
           }
           return a;
-        })
-      );
+        });
+
+        matchingRequests.forEach(mr => {
+          const hasExisting = next.some(
+            a => a.classSessionId === mr.classSessionId && a.studentId === mr.studentId
+          );
+          if (!hasExisting) {
+            next.push({
+              id: `att-${mr.classSessionId}-${mr.studentId}`,
+              classSessionId: mr.classSessionId,
+              studentId: mr.studentId,
+              status: mr.requestedStatus,
+              markedByFacultyId: reviewerId,
+              markedTimestamp: now,
+              remarks: `Corrected via Approval (${reviewRemarks || 'HOD Approved'})`
+            });
+          }
+        });
+
+        return next;
+      });
     }
 
     addAuditLog('REVIEW_BATCH_CORRECTION_REQUEST', 'CORRECTION_REQUEST', requestGroupId, { status, reviewRemarks });
@@ -3460,226 +3696,27 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
   };
 
-  // Analytical Calculation for Student FYUGP Attendance
-  const getStudentAttendanceSummary = (studentId: string) => {
-    // Find all course registrations for this student
-    const studentRegistrations = studentCourseRegistrations.filter(r => r.studentId === studentId);
-
-    // Identify student's special attendance events & approval status
-    const studentSpecialRecords = specialAttendanceRecords.filter(s => s.studentId === studentId);
-    const approvedEventIds = new Set(
-      specialAttendanceEvents
-        .filter(e => e.status === 'APPROVED' || e.status === 'APPLIED')
-        .map(e => e.id)
-    );
-    const pendingEventIds = new Set(
-      specialAttendanceEvents
-        .filter(e => e.status === 'PENDING_PRINCIPAL' || e.status === 'FORWARDED_TO_PRINCIPAL')
-        .map(e => e.id)
-    );
-
-    let totalConducted = 0;
-    let totalPresent = 0;
-    let totalRegularPresent = 0;
-    let totalSpecialDutyApproved = 0;
-    let totalSpecialDutyPending = 0;
-    let totalOd = 0;
-    let totalMedicalLeave = 0;
-    let totalAbsent = 0;
-
-    // Count pending special records for this student
-    studentSpecialRecords.forEach(sr => {
-      if (pendingEventIds.has(sr.eventId)) {
-        totalSpecialDutyPending++;
-      }
+  // Analytical Calculation for Student FYUGP Dual Attendance (Department Policy Aware)
+  const getStudentAttendanceSummary = (studentId: string): DualAttendanceSummary => {
+    const summary = calculateStudentDualAttendance({
+      studentId,
+      students,
+      departments,
+      settings,
+      courseCategories,
+      courses,
+      courseOfferings,
+      courseGroups,
+      faculty,
+      facultyAssignments,
+      studentCourseRegistrations,
+      timetablePeriods,
+      timetableEntries,
+      classSessions,
+      attendanceRecords,
+      specialAttendanceEvents,
+      specialAttendanceRecords
     });
-
-    const coursesSummary: CourseAttendanceSummary[] = studentRegistrations.map(reg => {
-      const offering = courseOfferings.find(o => o.id === reg.courseOfferingId);
-      const course = courses.find(c => c.id === offering?.courseId);
-      const category = courseCategories.find(cat => cat.id === reg.courseCategoryId || cat.id === course?.categoryId);
-      const group = courseGroups.find(g => g.id === reg.courseGroupId);
-      const facultyAssign = facultyAssignments.find(fa => fa.courseGroupId === reg.courseGroupId);
-      const assignedFaculty = faculty.find(f => f.id === facultyAssign?.facultyId);
-
-      // Find all conducted class sessions for this course group
-      const sessions = classSessions.filter(
-        s => s.courseGroupId === reg.courseGroupId && s.attendanceSubmitted
-      );
-
-      // Total conducted sessions for this course group
-      const courseConducted = sessions.length;
-      let coursePresent = 0;
-      let courseRegularPresent = 0;
-      let courseSpecialDutyPresent = 0;
-      let courseOd = 0;
-      let courseML = 0;
-      let courseAbsent = 0;
-
-      sessions.forEach(sess => {
-        const att = attendanceRecords.find(
-          a => a.classSessionId === sess.id && a.studentId === studentId
-        );
-        // Check if an APPROVED special attendance record exists for this date and period
-        const specialRec = studentSpecialRecords.find(
-          s => s.date === sess.date && s.periodId === sess.periodId && approvedEventIds.has(s.eventId)
-        );
-
-        if (specialRec) {
-          // Special institutional attendance approved by Principal!
-          if (att && (att.status === 'PRESENT' || att.status === 'OD')) {
-            if (att.status === 'PRESENT') {
-              courseRegularPresent++;
-              coursePresent++;
-            } else {
-              courseOd++;
-            }
-          } else {
-            // Overrides absent / unmarked session as authorized institutional special attendance
-            courseSpecialDutyPresent++;
-            coursePresent++; // consolidated into effective present
-          }
-        } else if (att) {
-          if (att.status === 'PRESENT') {
-            courseRegularPresent++;
-            coursePresent++;
-          }
-          else if (att.status === 'OD') courseOd++;
-          else if (att.status === 'MEDICAL_LEAVE') courseML++;
-          else if (att.status === 'ABSENT') courseAbsent++;
-          else if (att.status === 'APPROVED_LEAVE') {
-            courseRegularPresent++;
-            coursePresent++;
-          }
-        } else {
-          // If session was conducted but no record marked, counted as absent
-          courseAbsent++;
-        }
-      });
-
-      // Account for timetable periods covered by APPROVED special attendance where NO normal session was conducted
-      const groupTimetable = timetableEntries.filter(te => te.courseGroupId === reg.courseGroupId);
-
-      let specialConducted = 0;
-      let specialPresent = 0;
-
-      studentSpecialRecords.filter(sr => approvedEventIds.has(sr.eventId)).forEach(sr => {
-        const alreadyCountedInSession = sessions.some(s => s.date === sr.date && s.periodId === sr.periodId);
-        if (!alreadyCountedInSession) {
-          const eventDateObj = new Date(sr.date + 'T00:00:00Z');
-          const dayIndex = eventDateObj.getUTCDay();
-          const dayNames: DayOfWeek[] = ['SUNDAY' as any, 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
-          const eventDayName = dayNames[dayIndex];
-
-          const isScheduledForThisGroup = groupTimetable.some(
-            te => te.dayOfWeek === eventDayName && te.periodId === sr.periodId
-          );
-
-          if (isScheduledForThisGroup) {
-            specialConducted++;
-            specialPresent++;
-            courseSpecialDutyPresent++;
-          }
-        }
-      });
-
-      const effectiveCourseConducted = courseConducted + specialConducted;
-      const effectiveCoursePresent = coursePresent + specialPresent;
-
-      // Regular academic percentage vs Consolidated percentage
-      const regularAttended = courseRegularPresent + courseOd + (settings.enableOdAutomation ? courseML : 0);
-      const regularPct = effectiveCourseConducted > 0 ? Number(((regularAttended / effectiveCourseConducted) * 100).toFixed(2)) : 100;
-
-      // Total effective attendance count = Present + OD + (ML if enabled)
-      const effectiveAttended = effectiveCoursePresent + courseOd + (settings.enableOdAutomation ? courseML : 0);
-      const percentage = effectiveCourseConducted > 0 ? Number(((effectiveAttended / effectiveCourseConducted) * 100).toFixed(2)) : 100;
-
-      const isShortage = percentage < settings.minAttendancePercentage;
-      const isWarning = percentage < settings.warningAttendancePercentage && !isShortage;
-
-      // Attendance Calculator:
-      const targetRatio = settings.minAttendancePercentage / 100;
-      let classesNeededForMin = 0;
-      let classesCanMiss = 0;
-
-      if (effectiveCourseConducted > 0) {
-        if (percentage < settings.minAttendancePercentage) {
-          const needed = Math.ceil((targetRatio * effectiveCourseConducted - effectiveAttended) / (1 - targetRatio));
-          classesNeededForMin = Math.max(0, needed);
-        } else {
-          const canMiss = Math.floor(effectiveAttended / targetRatio - effectiveCourseConducted);
-          classesCanMiss = Math.max(0, canMiss);
-        }
-      }
-
-      totalConducted += effectiveCourseConducted;
-      totalPresent += effectiveCoursePresent;
-      totalRegularPresent += courseRegularPresent;
-      totalSpecialDutyApproved += courseSpecialDutyPresent;
-      totalOd += courseOd;
-      totalMedicalLeave += courseML;
-      totalAbsent += courseAbsent;
-
-      return {
-        registrationId: reg.id,
-        courseOfferingId: reg.courseOfferingId,
-        courseGroupId: reg.courseGroupId,
-        courseId: course?.id || 'crs-unknown',
-        courseCode: course?.courseCode || 'NSS-CRS',
-        courseTitle: course?.courseTitle || 'Course Title',
-        courseCategory: category?.name || 'Major',
-        categoryColorHex: category?.colorHex || '#2563eb',
-        groupName: group?.groupName || 'Group A',
-        facultyName: assignedFaculty?.fullName || 'Faculty Member',
-        credits: course?.credits || 4,
-        conductedCount: effectiveCourseConducted,
-        presentCount: effectiveCoursePresent,
-        odCount: courseOd,
-        medicalLeaveCount: courseML,
-        absentCount: courseAbsent,
-        percentage,
-        regularPercentage: regularPct,
-        consolidatedPercentage: percentage,
-        specialDutyCount: courseSpecialDutyPresent,
-        isShortage,
-        isWarning,
-        classesNeededForMin,
-        classesCanMiss
-      };
-    });
-
-    const totalEffectiveAttended = totalPresent + totalOd + (settings.enableOdAutomation ? totalMedicalLeave : 0);
-    const overallPercentage = totalConducted > 0 ? Number(((totalEffectiveAttended / totalConducted) * 100).toFixed(2)) : 100;
-    const regularAttendedAll = totalRegularPresent + totalOd + (settings.enableOdAutomation ? totalMedicalLeave : 0);
-    const regularPercentage = totalConducted > 0 ? Number(((regularAttendedAll / totalConducted) * 100).toFixed(2)) : 100;
-
-    // Collect student's special attendance events with details
-    const studentEventsMap = new Map<string, { event: SpecialAttendanceEvent; count: number }>();
-    studentSpecialRecords.forEach(sr => {
-      const ev = specialAttendanceEvents.find(e => e.id === sr.eventId);
-      if (ev) {
-        if (!studentEventsMap.has(ev.id)) {
-          studentEventsMap.set(ev.id, { event: ev, count: 1 });
-        } else {
-          studentEventsMap.get(ev.id)!.count++;
-        }
-      }
-    });
-
-    const studentSpecialEventsList = Array.from(studentEventsMap.values()).map(({ event, count }) => ({
-      id: event.id,
-      title: event.title,
-      eventType: event.eventType,
-      eventDate: event.eventDate,
-      isFullDay: event.isFullDay,
-      dutyCertificateRef: event.dutyCertificateRef,
-      reason: event.reason,
-      status: event.status,
-      periodsCount: count,
-      forwardedByHodName: event.forwardedByHodName,
-      approvedByName: event.approvedByName,
-      principalRemarks: event.principalRemarks
-    }));
 
     // Keep Firebase lightweight student ledger warm for ultra-low read quota usage on free plans
     const targetStudent = students.find(s => s.id === studentId);
@@ -3689,32 +3726,20 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
         rollNumber: targetStudent.rollNumber,
         admissionNumber: targetStudent.admissionNumber,
         fullName: targetStudent.fullName,
-        regularPercentage,
-        consolidatedPercentage: overallPercentage,
-        totalConducted,
-        totalPresent: totalRegularPresent,
-        specialDutyApprovedCount: totalSpecialDutyApproved,
-        specialDutyPendingCount: totalSpecialDutyPending
+        regularPercentage: summary.regularPercentage,
+        consolidatedPercentage: summary.overallPercentage,
+        hourWisePercentage: summary.hourWisePercentage,
+        attendancePolicy: summary.policy,
+        totalConducted: summary.totalConducted,
+        totalPresent: summary.totalPresent,
+        totalWorkingDays: summary.totalWorkingDays,
+        awardedDays: summary.awardedDays,
+        specialDutyApprovedCount: summary.specialDutyApprovedCount,
+        specialDutyPendingCount: summary.specialDutyPendingCount
       }).catch(() => {});
     }
 
-    return {
-      overallPercentage,
-      regularPercentage,
-      consolidatedPercentage: overallPercentage,
-      totalConducted,
-      totalPresent: totalRegularPresent,
-      totalOd,
-      totalMedicalLeave,
-      totalAbsent,
-      specialDutyApprovedCount: totalSpecialDutyApproved,
-      specialDutyPendingCount: totalSpecialDutyPending,
-      consolidatedTotalAttended: totalEffectiveAttended,
-      isShortage: overallPercentage < settings.minAttendancePercentage,
-      isWarning: overallPercentage < settings.warningAttendancePercentage && overallPercentage >= settings.minAttendancePercentage,
-      courses: coursesSummary,
-      studentSpecialEvents: studentSpecialEventsList
-    };
+    return summary;
   };
 
   // Helper: Retrieve all registered students for a Course Group (demonstrating cross-major cohort)
@@ -3776,41 +3801,73 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return [...unsubmitted, ...uninstantiated];
   };
 
-  // Helper: Export full attendance report to CSV
-  const exportAttendanceReportToCsv = (filename = 'NSS_College_Attendance_Report.csv') => {
+  // Helper: Export full attendance report to CSV (supports optional department / student scoping)
+  const exportAttendanceReportToCsv = (
+    filename = 'NSS_College_Attendance_Report.csv',
+    options?: { departmentId?: string; studentIds?: string[] }
+  ) => {
+    const safeFilename = filename.endsWith('.csv') ? filename : `${filename}.csv`;
     const headers = [
       'Student Roll No',
       'Admission No',
       'Student Name',
       'Home Department',
+      'Department Policy',
+      'Overall Official %',
+      'Awarded Working Days',
       'Course Code',
       'Course Title',
       'Category',
       'Classes Conducted',
-      'Classes Attended (P+OD)',
-      'Attendance %',
+      'Classes Attended (P+DL+OD+SP)',
+      'Subject Hour-Wise %',
       'Status'
     ];
 
+    const studentFilterSet = options?.studentIds ? new Set(options.studentIds) : null;
+    const deptFilterId = options?.departmentId && options.departmentId !== 'ALL' ? options.departmentId : undefined;
+
+    const targetStudents = students.filter(stu => {
+      if (deptFilterId && stu.homeDepartmentId !== deptFilterId) return false;
+      if (studentFilterSet && !studentFilterSet.has(stu.id)) return false;
+      return true;
+    });
+
     const rows: string[][] = [];
 
-    students.forEach(stu => {
+    targetStudents.forEach(stu => {
       const dept = departments.find(d => d.id === stu.homeDepartmentId);
       const summary = getStudentAttendanceSummary(stu.id);
+      const workingDaysStr =
+        summary.policy === 'SESSION_STRICT' && summary.totalWorkingDays > 0
+          ? `${summary.awardedDays}/${summary.totalWorkingDays}d`
+          : 'N/A';
       summary.courses.forEach(crs => {
-        const attended = crs.presentCount + crs.odCount + crs.medicalLeaveCount;
+        const attended =
+          crs.presentCount +
+          crs.odCount +
+          (settings.enableOdAutomation ? crs.medicalLeaveCount : 0);
         rows.push([
           stu.rollNumber,
           stu.admissionNumber,
           `"${stu.fullName}"`,
           `"${dept?.name || 'Department'}"`,
+          `"${summary.policy}"`,
+          `${summary.overallPercentage}%`,
+          workingDaysStr,
           crs.courseCode,
           `"${crs.courseTitle}"`,
           `"${crs.courseCategory}"`,
           crs.conductedCount.toString(),
           attended.toString(),
           `${crs.percentage}%`,
-          crs.isShortage ? 'SHORTAGE' : crs.isWarning ? 'WARNING' : 'NORMAL'
+          summary.totalConducted === 0
+            ? 'NO_SESSIONS'
+            : summary.isShortage
+              ? 'SHORTAGE'
+              : summary.isWarning
+                ? 'WARNING'
+                : 'ELIGIBLE'
         ]);
       });
     });
@@ -3820,10 +3877,11 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', filename);
+    link.setAttribute('download', safeFilename);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const resetToDefaultData = async (wipeSupabaseTestData = false) => {

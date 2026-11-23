@@ -6,7 +6,7 @@ import {
   mapCorrectionRequestFromDb
 } from '../lib/dataMappers';
 import { toValidUuid } from '../lib/uuidMapping';
-import { safeOfferingId, safeGroupId, safeFacultyId, safePeriodId, safeStudentId } from '../lib/foreignKeyHelper';
+import { safeOfferingId, safeGroupId, safeFacultyId, safePeriodId, safeStudentId, refreshIdCache } from '../lib/foreignKeyHelper';
 import { resilientInsert, resilientUpdate, resilientUpsert } from '../lib/resilientMutation';
 import { securityShieldService } from './securityShieldService';
 
@@ -15,7 +15,12 @@ export const attendanceService = {
     try {
       let query = supabase.from('class_sessions').select('*');
       if (date) query = query.eq('date', date);
-      const { data, error } = await query;
+      let { data, error } = await query;
+      if (error && date && error.message?.includes('date')) {
+        const fallbackRes = await supabase.from('class_sessions').select('*').eq('session_date', date);
+        data = fallbackRes.data;
+        error = fallbackRes.error;
+      }
       if (error) throw error;
       return { data: (data || []).map(mapClassSessionFromDb), error: null };
     } catch (err: any) {
@@ -203,14 +208,44 @@ export const attendanceService = {
 
   async createSession(session: Partial<ClassSession>): Promise<{ data: ClassSession | null; error: Error | null }> {
     try {
-      const verifiedOfferingId = await safeOfferingId(session.courseOfferingId);
-      const verifiedGroupId = await safeGroupId(session.courseGroupId);
-      const verifiedFacultyId = await safeFacultyId(session.facultyId);
-      const verifiedPeriodId = await safePeriodId(session.periodId);
+      let verifiedOfferingId = await safeOfferingId(session.courseOfferingId);
+      let verifiedGroupId = await safeGroupId(session.courseGroupId);
+      let verifiedFacultyId = await safeFacultyId(session.facultyId);
+      let verifiedPeriodId = await safePeriodId(session.periodId);
+
+      if (!verifiedOfferingId || (session.periodId && !verifiedPeriodId)) {
+        await refreshIdCache(true);
+        verifiedOfferingId = verifiedOfferingId || (await safeOfferingId(session.courseOfferingId));
+        verifiedGroupId = verifiedGroupId || (await safeGroupId(session.courseGroupId));
+        verifiedFacultyId = verifiedFacultyId || (await safeFacultyId(session.facultyId));
+        verifiedPeriodId = verifiedPeriodId || (await safePeriodId(session.periodId));
+      }
 
       if (!verifiedOfferingId) {
-        console.warn('Skipping remote session insert: course offering not in database yet.');
-        return { data: null, error: null };
+        return {
+          data: null,
+          error: new Error('Course offering not found in Supabase. Please ensure academic setup is synced.')
+        };
+      }
+
+      const resolvedDate = session.date || new Date().toISOString().split('T')[0];
+
+      // Idempotency check: reuse existing active session for (course_group_id, date, period_id)
+      if (session.status !== 'CANCELLED' && verifiedGroupId && verifiedPeriodId) {
+        const { data: existingSession } = await supabase
+          .from('class_sessions')
+          .select('*')
+          .eq('course_group_id', verifiedGroupId)
+          .eq('date', resolvedDate)
+          .eq('period_id', verifiedPeriodId)
+          .neq('status', 'CANCELLED')
+          .order('attendance_submitted', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (existingSession) {
+          return { data: mapClassSessionFromDb(existingSession), error: null };
+        }
       }
 
       const payload: any = {
@@ -218,7 +253,8 @@ export const attendanceService = {
         course_group_id: verifiedGroupId,
         faculty_id: verifiedFacultyId,
         substitute_faculty_id: await safeFacultyId(session.substituteFacultyId),
-        date: session.date || new Date().toISOString().split('T')[0],
+        date: resolvedDate,
+        session_date: resolvedDate,
         period_id: verifiedPeriodId,
         start_time: session.startTime,
         end_time: session.endTime,
@@ -285,15 +321,43 @@ export const attendanceService = {
         return { success: true, error: null };
       }
 
-      // 2. Fallback update
+      // 2. Fallback update (ensuring raw period attendance_records row is also updated on APPROVAL)
+      const nowIso = new Date().toISOString();
       const payload = {
         status,
         reviewed_by_faculty_id: validReviewerId,
-        review_date: new Date().toISOString(),
+        review_date: nowIso,
         review_remarks: reviewRemarks || null
       };
       const { error } = await resilientUpdate('attendance_correction_requests', validId, payload);
       if (error) throw error;
+
+      if (status === 'APPROVED') {
+        const { data: reqRow } = await supabase
+          .from('attendance_correction_requests')
+          .select('class_session_id, student_id, requested_status')
+          .eq('id', validId)
+          .maybeSingle();
+
+        if (reqRow?.class_session_id && reqRow?.student_id && reqRow?.requested_status) {
+          const { error: upsertErr } = await resilientUpsert(
+            'attendance_records',
+            [
+              {
+                class_session_id: reqRow.class_session_id,
+                student_id: reqRow.student_id,
+                status: reqRow.requested_status,
+                marked_by_faculty_id: validReviewerId,
+                marked_timestamp: nowIso,
+                remarks: reviewRemarks ? `Correction Approved: ${reviewRemarks}` : 'Correction Approved'
+              }
+            ],
+            { onConflict: 'class_session_id,student_id' }
+          );
+          if (upsertErr) throw upsertErr;
+        }
+      }
+
       return { success: true, error: null };
     } catch (err: any) {
       console.warn('Supabase attendanceService.reviewCorrection fallback:', err?.message || err);

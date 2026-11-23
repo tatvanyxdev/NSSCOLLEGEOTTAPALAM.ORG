@@ -64,13 +64,12 @@ export const SpecialAttendanceView: React.FC = () => {
   const isHOD = activeRole === 'HOD';
   const isPrincipal = activeRole === 'PRINCIPAL' || activeRole === 'SUPER_ADMIN';
   
-  // Resolve HOD department safely from user profile or departments mapping
+  // Resolve HOD department safely from user profile or departments mapping (fail closed if unresolved)
   const hodDeptId = isHOD
     ? user?.departmentId ||
       user?.facultyProfile?.departmentId ||
       (user as any)?.department_id ||
-      departments.find(d => d.hodFacultyId === user?.id)?.id ||
-      departments[0]?.id
+      departments.find(d => d.hodFacultyId === user?.id)?.id
     : undefined;
   const hodDept = departments.find(d => d.id === hodDeptId);
 
@@ -280,14 +279,20 @@ export const SpecialAttendanceView: React.FC = () => {
   // Target periods count
   const targetPeriodsCount = formIsFullDay ? timetablePeriods.length : formSelectedPeriodIds.length;
 
+  // Role-scoped base events & records
+  const scopedEvents = useMemo(() => {
+    if (!isHOD) return specialAttendanceEvents;
+    if (!hodDeptId) return [];
+    return specialAttendanceEvents.filter(event => {
+      if (event.scopeType === 'COLLEGE') return true;
+      if (event.forwardedByHodId === user?.id) return true;
+      return !event.departmentId || event.departmentId === hodDeptId;
+    });
+  }, [specialAttendanceEvents, isHOD, hodDeptId, user?.id]);
+
   // Filtered Events list
   const filteredEvents = useMemo(() => {
-    return specialAttendanceEvents.filter(event => {
-      // Role scope filter for HOD
-      if (isHOD && hodDeptId && event.scopeType === 'DEPARTMENT' && event.departmentId && event.departmentId !== hodDeptId) {
-        return false;
-      }
-
+    return scopedEvents.filter(event => {
       // Search Query
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
@@ -314,11 +319,25 @@ export const SpecialAttendanceView: React.FC = () => {
 
       return true;
     });
-  }, [specialAttendanceEvents, searchQuery, selectedScopeFilter, selectedCategoryFilter, selectedStatusFilter, isHOD, hodDeptId]);
+  }, [scopedEvents, searchQuery, selectedScopeFilter, selectedCategoryFilter, selectedStatusFilter]);
+
+  const scopedRecords = useMemo(() => {
+    if (!isHOD) return specialAttendanceRecords;
+    if (!hodDeptId) return [];
+    return specialAttendanceRecords.filter(rec => {
+      const student = students.find(s => s.id === rec.studentId);
+      const event = specialAttendanceEvents.find(e => e.id === rec.eventId);
+      return (
+        student?.homeDepartmentId === hodDeptId ||
+        event?.departmentId === hodDeptId ||
+        event?.forwardedByHodId === user?.id
+      );
+    });
+  }, [specialAttendanceRecords, students, specialAttendanceEvents, isHOD, hodDeptId, user?.id]);
 
   // Filtered Student Records
   const filteredRecords = useMemo(() => {
-    return specialAttendanceRecords.filter(rec => {
+    return scopedRecords.filter(rec => {
       const student = students.find(s => s.id === rec.studentId);
       const event = specialAttendanceEvents.find(e => e.id === rec.eventId);
 
@@ -337,7 +356,7 @@ export const SpecialAttendanceView: React.FC = () => {
 
       return true;
     });
-  }, [specialAttendanceRecords, students, specialAttendanceEvents, recordConflictFilter, recordSearchQuery]);
+  }, [scopedRecords, students, specialAttendanceEvents, recordConflictFilter, recordSearchQuery]);
 
   // Principal Approval & Rejection Handlers
   const handleApproveEvent = async (event: SpecialAttendanceEvent, orderRef?: string, remarks?: string) => {
@@ -679,7 +698,7 @@ export const SpecialAttendanceView: React.FC = () => {
             <FileText className="w-4 h-4" />
             Special Attendance Orders
             <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-slate-100 text-slate-700 font-bold">
-              {specialAttendanceEvents.length}
+              {scopedEvents.length}
             </span>
           </button>
 
@@ -708,7 +727,7 @@ export const SpecialAttendanceView: React.FC = () => {
             <Users className="w-4 h-4" />
             Student Duty Log
             <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-slate-100 text-slate-700 font-bold">
-              {specialAttendanceRecords.length}
+              {scopedRecords.length}
             </span>
           </button>
         </div>
@@ -765,7 +784,7 @@ export const SpecialAttendanceView: React.FC = () => {
                 </div>
                 <div className="px-3 py-2 rounded-xl bg-white/10 backdrop-blur-xs border border-white/10 text-center min-w-[90px]">
                   <div className="text-xl font-bold text-emerald-300">
-                    {specialAttendanceEvents.filter(e => e.status === 'APPROVED' || e.status === 'APPLIED').length}
+                    {scopedEvents.filter(e => e.status === 'APPROVED' || e.status === 'APPLIED').length}
                   </div>
                   <div className="text-[10px] text-emerald-200 font-semibold uppercase">Sanctioned</div>
                 </div>

@@ -1,20 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useCollegeData } from '../../contexts/CollegeDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { AttendanceStatus, ClassSession } from '../../types';
-import { Modal, Badge } from '../common/UIComponents';
+import { Modal } from '../common/UIComponents';
+import { inferPeriodSession } from '../../utils/dualAttendanceEngine';
 import {
   CheckCircle2,
   XCircle,
   Clock,
-  HeartPulse,
-  Award,
   Users,
-  BookOpen,
   Calendar,
-  Layers,
-  Sparkles,
-  Save
+  Save,
+  Lock
 } from 'lucide-react';
 
 interface TakeAttendanceModalProps {
@@ -38,11 +35,14 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
     timetablePeriods,
     faculty,
     attendanceRecords,
+    settings,
     getCourseGroupRegisteredStudents,
     submitAttendance
   } = useCollegeData();
 
-  const { user } = useAuth();
+  const { user, activeRole } = useAuth();
+  const initializedKeyRef = useRef<string | null>(null);
+  const initializedCountRef = useRef<number>(0);
 
   const [studentStatuses, setStudentStatuses] = useState<Record<string, { status: AttendanceStatus; remarks: string }>>({});
   const [topicCovered, setTopicCovered] = useState('');
@@ -63,10 +63,23 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
   // Cross-programme registered students for this group
   const registeredStudents = session ? getCourseGroupRegisteredStudents(session.courseGroupId) : [];
 
-  // Populate initial attendance state
+  // Populate initial attendance state only when opening modal or changing session
   useEffect(() => {
-    if (!session) return;
+    if (!isOpen || !session) {
+      initializedKeyRef.current = null;
+      initializedCountRef.current = 0;
+      return;
+    }
+
+    const modalKey = `${isOpen}:${session.id}`;
+    const alreadyInitializedSameSession = initializedKeyRef.current === modalKey;
+    if (alreadyInitializedSameSession && initializedCountRef.current > 0) {
+      return;
+    }
+
     setTopicCovered(session.topicCovered || '');
+    setErrorMessage(null);
+    setSubmitSuccess(false);
 
     const existingRecords = attendanceRecords.filter(r => r.classSessionId === session.id);
     const initialMap: Record<string, { status: AttendanceStatus; remarks: string }> = {};
@@ -76,17 +89,63 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
       if (existing) {
         initialMap[stu.id] = { status: existing.status, remarks: existing.remarks || '' };
       } else {
-        // Default to PRESENT
         initialMap[stu.id] = { status: 'PRESENT', remarks: '' };
       }
     });
 
     setStudentStatuses(initialMap);
-  }, [session, attendanceRecords, registeredStudents.length]);
+    initializedKeyRef.current = modalKey;
+    initializedCountRef.current = registeredStudents.length;
+  }, [isOpen, session, attendanceRecords, registeredStudents]);
 
-  if (!session || !course) return null;
+  if (!isOpen || !session) return null;
+
+  if (!course) {
+    return (
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title="Attendance Session"
+        subtitle={`Session Date: ${session.date}`}
+        maxWidth="max-w-lg"
+      >
+        <div className="p-6 text-center space-y-3">
+          <p className="text-sm font-semibold text-slate-800">
+            Course offering metadata for this session could not be loaded.
+          </p>
+          <p className="text-xs text-slate-500">
+            Please refresh data sync from the top bar and try opening the attendance register again.
+          </p>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold"
+          >
+            Close
+          </button>
+        </div>
+      </Modal>
+    );
+  }
+
+  const effectiveRole = activeRole || user?.activeRole || 'TEACHER';
+  const isPrivilegedEditor =
+    effectiveRole === 'SUPER_ADMIN' ||
+    effectiveRole === 'PRINCIPAL' ||
+    effectiveRole === 'HOD' ||
+    effectiveRole === 'ATTENDANCE_COORDINATOR';
+  const windowHours = Number(settings?.attendanceCorrectionWindowHours ?? 24);
+  const submittedMs = session.submittedTimestamp ? Date.parse(session.submittedTimestamp) : NaN;
+  const elapsedHours = Number.isFinite(submittedMs) ? (Date.now() - submittedMs) / 3600000 : Infinity;
+  const isCorrectionLocked =
+    Boolean(session.attendanceSubmitted) &&
+    !isPrivilegedEditor &&
+    Boolean(settings?.requireHodApprovalForCorrection) &&
+    !settings?.allowTeacherDirectEdit &&
+    elapsedHours > windowHours;
 
   const handleStatusChange = (studentId: string, status: AttendanceStatus) => {
+    if (isCorrectionLocked) return;
     setStudentStatuses(prev => ({
       ...prev,
       [studentId]: {
@@ -97,6 +156,7 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
   };
 
   const handleMarkAll = (status: AttendanceStatus) => {
+    if (isCorrectionLocked) return;
     const updated: Record<string, { status: AttendanceStatus; remarks: string }> = {};
     registeredStudents.forEach(stu => {
       updated[stu.id] = {
@@ -109,6 +169,12 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isCorrectionLocked) {
+      setErrorMessage(
+        `Correction window (${windowHours}h) has expired. Please submit an Attendance Correction Request for HOD approval.`
+      );
+      return;
+    }
     setErrorMessage(null);
 
     if (!topicCovered.trim()) {
@@ -117,10 +183,10 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
     }
 
     setIsSubmitting(true);
-    const records = Object.entries(studentStatuses).map(([studentId, data]: [string, { status: AttendanceStatus; remarks: string }]) => ({
-      studentId,
-      status: data.status,
-      remarks: data.remarks
+    const records = registeredStudents.map(stu => ({
+      studentId: stu.id,
+      status: studentStatuses[stu.id]?.status || 'PRESENT',
+      remarks: studentStatuses[stu.id]?.remarks || ''
     }));
 
     const res = await submitAttendance(session.id, records, topicCovered);
@@ -137,14 +203,23 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
     }, 600);
   };
 
-  // Stats calculation
+  // Stats calculation (excluding CANCELLED periods from session active denominator)
   const totalStudents = registeredStudents.length;
-  const statusList = Object.values(studentStatuses) as { status: AttendanceStatus; remarks: string }[];
-  const presentCount = statusList.filter(s => s.status === 'PRESENT').length;
-  const absentCount = statusList.filter(s => s.status === 'ABSENT').length;
-  const odCount = statusList.filter(s => s.status === 'OD').length;
-  const medicalCount = statusList.filter(s => s.status === 'MEDICAL_LEAVE').length;
-  const sessionPercent = totalStudents > 0 ? (((presentCount + odCount) / totalStudents) * 100).toFixed(1) : '100';
+  const statusList = registeredStudents.map(stu => studentStatuses[stu.id]?.status || 'PRESENT');
+  const presentCount = statusList.filter(s => s === 'PRESENT').length;
+  const absentCount = statusList.filter(s => s === 'ABSENT').length;
+  const dutyLeaveCount = statusList.filter(s => s === 'DUTY_LEAVE').length;
+  const odCount = statusList.filter(s => s === 'OD').length;
+  const medicalCount = statusList.filter(s => s === 'MEDICAL_LEAVE').length;
+  const cancelledCount = statusList.filter(s => s === 'CANCELLED').length;
+  const activeStudents = Math.max(0, totalStudents - cancelledCount);
+  const attendedCount =
+    presentCount +
+    dutyLeaveCount +
+    odCount +
+    (settings?.enableOdAutomation ? medicalCount : 0);
+  const sessionPercent = activeStudents > 0 ? `${((attendedCount / activeStudents) * 100).toFixed(1)}%` : 'N/A';
+  const sessionSlot = inferPeriodSession(period, session.periodId);
 
   // Filtered roster
   const filteredStudents = registeredStudents.filter(stu => {
@@ -187,6 +262,9 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
                 <span className="bg-white/10 px-2 py-0.5 rounded text-xs text-blue-200">
                   Room: {group?.room}
                 </span>
+                <span className="bg-amber-400/20 border border-amber-300/30 px-2 py-0.5 rounded text-xs font-bold text-amber-200">
+                  {sessionSlot === 'FN' ? 'FN · Forenoon' : 'AN · Afternoon'}
+                </span>
               </div>
               <h4 className="text-lg sm:text-xl font-bold">{course.courseTitle}</h4>
               <p className="text-xs text-slate-300 mt-1 flex flex-wrap items-center gap-3">
@@ -205,13 +283,25 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
             {/* Live Percentage Meter */}
             <div className="bg-white/10 backdrop-blur-md px-3.5 py-2.5 rounded-xl border border-white/10 text-center min-w-[110px]">
               <p className="text-[10px] text-slate-300 font-semibold uppercase">Attendance</p>
-              <p className="text-xl sm:text-2xl font-black text-emerald-400">{sessionPercent}%</p>
+              <p className="text-xl sm:text-2xl font-black text-emerald-400">{sessionPercent}</p>
               <p className="text-[10px] text-slate-300">
-                {presentCount + odCount} / {totalStudents} Present
+                {attendedCount} / {activeStudents} Present
               </p>
             </div>
           </div>
         </div>
+
+        {isCorrectionLocked && (
+          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-950">
+            <Lock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Direct Edit Locked ({windowHours}h Correction Window Expired)</p>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                This session is locked per institutional policy. To amend a student&apos;s mark, submit a formal Attendance Correction Request for HOD approval.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Topic Covered Input */}
         <div>
@@ -272,18 +362,24 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
         </div>
 
         {/* Attendance Stats Bar */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-100 p-2.5 rounded-xl text-center text-xs font-bold">
+        <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 bg-slate-100 p-2.5 rounded-xl text-center text-xs font-bold">
           <div className="bg-white p-2 rounded-lg text-emerald-700 border border-emerald-100">
             Present: <span className="text-sm">{presentCount}</span>
           </div>
           <div className="bg-white p-2 rounded-lg text-rose-700 border border-rose-100">
             Absent: <span className="text-sm">{absentCount}</span>
           </div>
+          <div className="bg-white p-2 rounded-lg text-indigo-700 border border-indigo-100">
+            Duty Leave: <span className="text-sm">{dutyLeaveCount}</span>
+          </div>
           <div className="bg-white p-2 rounded-lg text-purple-700 border border-purple-100">
             On Duty (OD): <span className="text-sm">{odCount}</span>
           </div>
           <div className="bg-white p-2 rounded-lg text-amber-700 border border-amber-100">
-            Medical / Leave: <span className="text-sm">{medicalCount}</span>
+            Medical: <span className="text-sm">{medicalCount}</span>
+          </div>
+          <div className="bg-white p-2 rounded-lg text-slate-600 border border-slate-200">
+            Cancelled: <span className="text-sm">{cancelledCount}</span>
           </div>
         </div>
 
@@ -304,10 +400,14 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
                     className={`flex flex-col sm:flex-row sm:items-center justify-between p-3 gap-2.5 sm:gap-4 transition-colors ${
                       currentStatus === 'ABSENT'
                         ? 'bg-rose-50/40'
+                        : currentStatus === 'DUTY_LEAVE'
+                        ? 'bg-indigo-50/40'
                         : currentStatus === 'OD'
                         ? 'bg-purple-50/40'
                         : currentStatus === 'MEDICAL_LEAVE'
                         ? 'bg-amber-50/40'
+                        : currentStatus === 'CANCELLED'
+                        ? 'bg-slate-100/80 opacity-75'
                         : 'hover:bg-slate-50'
                     }`}
                   >
@@ -329,11 +429,12 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
                     </div>
 
                     {/* Status Toggle Buttons */}
-                    <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-auto">
+                    <div className="flex flex-wrap items-center gap-1.5 shrink-0 self-end sm:self-auto">
                       <button
                         type="button"
                         onClick={() => handleStatusChange(student.id, 'PRESENT')}
-                        className={`px-3 sm:px-2.5 py-1.5 sm:py-1 rounded-md text-xs font-bold transition-all ${
+                        title="Present"
+                        className={`px-2.5 py-1.5 sm:py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
                           currentStatus === 'PRESENT'
                             ? 'bg-emerald-600 text-white shadow-xs'
                             : 'bg-slate-100 text-slate-600 hover:bg-emerald-100 hover:text-emerald-800'
@@ -345,7 +446,8 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleStatusChange(student.id, 'ABSENT')}
-                        className={`px-3 sm:px-2.5 py-1.5 sm:py-1 rounded-md text-xs font-bold transition-all ${
+                        title="Absent"
+                        className={`px-2.5 py-1.5 sm:py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
                           currentStatus === 'ABSENT'
                             ? 'bg-rose-600 text-white shadow-xs'
                             : 'bg-slate-100 text-slate-600 hover:bg-rose-100 hover:text-rose-800'
@@ -356,8 +458,22 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
 
                       <button
                         type="button"
+                        onClick={() => handleStatusChange(student.id, 'DUTY_LEAVE')}
+                        title="Duty Leave (DL)"
+                        className={`px-2.5 py-1.5 sm:py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                          currentStatus === 'DUTY_LEAVE'
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-indigo-100 hover:text-indigo-800'
+                        }`}
+                      >
+                        DL
+                      </button>
+
+                      <button
+                        type="button"
                         onClick={() => handleStatusChange(student.id, 'OD')}
-                        className={`px-3 sm:px-2.5 py-1.5 sm:py-1 rounded-md text-xs font-bold transition-all ${
+                        title="On Duty (OD)"
+                        className={`px-2.5 py-1.5 sm:py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
                           currentStatus === 'OD'
                             ? 'bg-purple-600 text-white shadow-xs'
                             : 'bg-slate-100 text-slate-600 hover:bg-purple-100 hover:text-purple-800'
@@ -369,13 +485,27 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleStatusChange(student.id, 'MEDICAL_LEAVE')}
-                        className={`px-3 sm:px-2.5 py-1.5 sm:py-1 rounded-md text-xs font-bold transition-all ${
+                        title="Medical Leave"
+                        className={`px-2.5 py-1.5 sm:py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
                           currentStatus === 'MEDICAL_LEAVE'
                             ? 'bg-amber-600 text-white shadow-xs'
                             : 'bg-slate-100 text-slate-600 hover:bg-amber-100 hover:text-amber-800'
                         }`}
                       >
                         ML
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleStatusChange(student.id, 'CANCELLED')}
+                        title="Cancelled / Excluded"
+                        className={`px-2 py-1.5 sm:py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                          currentStatus === 'CANCELLED'
+                            ? 'bg-slate-700 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-800'
+                        }`}
+                      >
+                        CANC
                       </button>
                     </div>
                   </div>
@@ -421,13 +551,18 @@ export const TakeAttendanceModal: React.FC<TakeAttendanceModalProps> = ({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={isSubmitting}
+            disabled={isSubmitting || isCorrectionLocked}
             className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold flex items-center gap-2 shadow-md hover:shadow-lg transition-all"
           >
             {isSubmitting ? (
               <>
                 <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
                 <span>Saving to Supabase...</span>
+              </>
+            ) : isCorrectionLocked ? (
+              <>
+                <Lock className="w-4 h-4" />
+                <span>Window Closed (HOD Approval Req.)</span>
               </>
             ) : (
               <>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useCollegeData } from '../../contexts/CollegeDataContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { Modal, Badge } from '../common/UIComponents';
@@ -19,10 +19,10 @@ export const AttendanceCorrectionModal: React.FC<AttendanceCorrectionModalProps>
   student
 }) => {
   const {
-    students,
     attendanceRecords,
     courses,
     courseOfferings,
+    faculty,
     getCourseGroupRegisteredStudents,
     submitCorrectionRequest,
     submitBatchCorrectionRequest,
@@ -39,6 +39,26 @@ export const AttendanceCorrectionModal: React.FC<AttendanceCorrectionModalProps>
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setMode('SINGLE');
+      setSelectedStudentId(student?.id || '');
+      setBatchSelectedIds(student ? [student.id] : []);
+      setRequestedStatus('PRESENT');
+      setReason('');
+      setSubmitError(null);
+      setSubmitSuccess(false);
+    }
+  }, [isOpen, session?.id, student?.id]);
+
+  const matchedFaculty = faculty.find(
+    f =>
+      f.id === user?.id ||
+      f.id === user?.facultyProfile?.id ||
+      (user?.email && f.email && f.email.toLowerCase() === user.email.toLowerCase())
+  );
+  const requesterFacultyId = matchedFaculty?.id || user?.facultyProfile?.id || user?.id || '';
 
   if (!session) return null;
 
@@ -92,7 +112,7 @@ export const AttendanceCorrectionModal: React.FC<AttendanceCorrectionModalProps>
         oldStatus,
         requestedStatus,
         reason,
-        requestedByFacultyId: user?.id || 'fac-1'
+        requestedByFacultyId: requesterFacultyId
       });
 
       setIsSubmitting(false);
@@ -120,12 +140,12 @@ export const AttendanceCorrectionModal: React.FC<AttendanceCorrectionModalProps>
         };
       });
 
-      const res = await submitBatchCorrectionRequest({
-        classSessionId: session.id,
+      const res = await submitBatchCorrectionRequest(
+        session.id,
+        items,
         reason,
-        requestedByFacultyId: user?.id || 'fac-1',
-        items
-      });
+        requesterFacultyId
+      );
 
       setIsSubmitting(false);
 
@@ -263,7 +283,17 @@ export const AttendanceCorrectionModal: React.FC<AttendanceCorrectionModalProps>
                       </div>
                     </div>
                     <Badge
-                      variant={curStatus === 'PRESENT' ? 'success' : curStatus === 'OD' ? 'purple' : 'danger'}
+                      variant={
+                        curStatus === 'PRESENT' || curStatus === 'APPROVED_LEAVE'
+                          ? 'success'
+                          : curStatus === 'OD' || curStatus === 'DUTY_LEAVE' || curStatus === 'SPECIAL'
+                            ? 'purple'
+                            : curStatus === 'MEDICAL_LEAVE'
+                              ? 'warning'
+                              : curStatus === 'CANCELLED'
+                                ? 'neutral'
+                                : 'danger'
+                      }
                       size="sm"
                     >
                       {curStatus}
@@ -293,10 +323,12 @@ export const AttendanceCorrectionModal: React.FC<AttendanceCorrectionModalProps>
               className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm font-bold text-slate-800 bg-white focus:ring-2 focus:ring-blue-500"
             >
               <option value="PRESENT">PRESENT</option>
+              <option value="DUTY_LEAVE">DUTY LEAVE (DL)</option>
               <option value="OD">ON DUTY (OD)</option>
               <option value="MEDICAL_LEAVE">MEDICAL LEAVE</option>
               <option value="APPROVED_LEAVE">APPROVED LEAVE</option>
               <option value="ABSENT">ABSENT</option>
+              <option value="CANCELLED">CANCELLED (EXCLUDED)</option>
             </select>
           </div>
         </div>

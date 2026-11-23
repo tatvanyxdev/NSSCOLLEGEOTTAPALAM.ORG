@@ -19,6 +19,7 @@ import { PushNotificationBanner } from './components/common/PushNotificationBann
 import { FloatingThemeToggle } from './components/common/ThemeToggle';
 import { isRoleUnderMaintenance, isAttendanceOnlyLockout, getAffectedRolesSummary } from './lib/maintenanceGuard';
 import { initNativeAppBridge, registerBackHandler, updateNativeStatusBar } from './lib/capacitorBridge';
+import { supabaseHeartbeatService } from './services/supabaseHeartbeatService';
 import { Wrench } from 'lucide-react';
 
 // Views
@@ -37,6 +38,7 @@ import { StaffEnrollmentView } from './components/views/StaffEnrollmentView';
 import { ReportsCenterView } from './components/views/ReportsCenterView';
 import { AnnouncementsView } from './components/views/AnnouncementsView';
 import { SystemSettingsView } from './components/views/SystemSettingsView';
+import { UserCredentialsView } from './components/views/UserCredentialsView';
 import { SpecialAttendanceView } from './components/views/SpecialAttendanceView';
 import { NoticesAndCircularsView } from './components/views/NoticesAndCircularsView';
 import { AcademicCalendarView } from './components/views/AcademicCalendarView';
@@ -60,8 +62,9 @@ const tabTitles: Record<string, string> = {
   'staff-enrollment': '2. Staff & Faculty Enrollment',
   registrations: 'Course & Subject Allocations',
   faculty: 'Staff & Faculty Directory',
-  reports: 'Reports & Export',
+  reports: 'Attendance Reports & Sheets',
   announcements: 'Announcements',
+  credentials: 'User Credentials Directory',
   settings: 'Configuration & SQL DB',
   notices: 'Notices & Circulars',
   events: 'Academic Calendar & Events',
@@ -246,6 +249,11 @@ const MainLayout: React.FC = () => {
         return <ReportsCenterView />;
       case 'announcements':
         return <AnnouncementsView />;
+      case 'credentials':
+        if (activeRole !== 'SUPER_ADMIN') {
+          return <DashboardView onNavigate={setActiveTab} />;
+        }
+        return <UserCredentialsView />;
       case 'settings':
         if (!can(activeRole, 'settings', 'read')) {
           return <DashboardView onNavigate={setActiveTab} />;
@@ -411,10 +419,18 @@ const NativeAppLifecycle: React.FC = () => {
   return null;
 };
 
+const DatabaseKeepAliveLifecycle: React.FC = () => {
+  useEffect(() => {
+    supabaseHeartbeatService.initHeartbeat();
+  }, []);
+  return null;
+};
+
 export default function App() {
   return (
     <ThemeProvider>
       <NativeAppLifecycle />
+      <DatabaseKeepAliveLifecycle />
       <AuthProvider>
         <CollegeDataProvider>
           <PersonalizedCollegeProvider>

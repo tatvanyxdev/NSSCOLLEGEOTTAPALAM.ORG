@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useCollegeData } from '../../contexts/CollegeDataContext';
 import { Modal, Badge } from '../common/UIComponents';
-import { Calculator, Target, TrendingUp, AlertTriangle, CheckCircle } from 'lucide-react';
+import { Target, AlertTriangle, CheckCircle } from 'lucide-react';
 
 interface AttendanceCalculatorModalProps {
   isOpen: boolean;
@@ -17,33 +17,49 @@ export const AttendanceCalculatorModal: React.FC<AttendanceCalculatorModalProps>
   const { getStudentAttendanceSummary, settings } = useCollegeData();
   const summary = getStudentAttendanceSummary(studentId);
 
-  const [targetPercentage, setTargetPercentage] = useState<number>(settings.minAttendancePercentage || 75);
+  const defaultTarget = Math.min(99, Math.max(1, Number(settings.minAttendancePercentage) || 75));
+  const [targetPercentage, setTargetPercentage] = useState<number>(defaultTarget);
   const [simulatedConducted, setSimulatedConducted] = useState<number>(summary.totalConducted || 20);
   const [simulatedAttended, setSimulatedAttended] = useState<number>(
-    summary.totalPresent + summary.totalOd + summary.totalMedicalLeave || 18
+    summary.totalConducted > 0 ? summary.consolidatedTotalAttended : 18
   );
 
-  const currentPercent = simulatedConducted > 0 ? (simulatedAttended / simulatedConducted) * 100 : 100;
-  const targetRatio = targetPercentage / 100;
+  useEffect(() => {
+    if (isOpen) {
+      setTargetPercentage(Math.min(99, Math.max(1, Number(settings.minAttendancePercentage) || 75)));
+      setSimulatedConducted(summary.totalConducted > 0 ? summary.totalConducted : 20);
+      setSimulatedAttended(summary.totalConducted > 0 ? summary.consolidatedTotalAttended : 18);
+    }
+  }, [isOpen, studentId, summary.totalConducted, summary.consolidatedTotalAttended, settings.minAttendancePercentage]);
 
-  // Calculation 1: If current < target, how many consecutive upcoming classes needed?
-  // (attended + x) / (conducted + x) >= targetRatio
-  // attended + x >= targetRatio * conducted + targetRatio * x
-  // x * (1 - targetRatio) >= targetRatio * conducted - attended
-  // x = ceil((targetRatio * conducted - attended) / (1 - targetRatio))
-  let neededClasses = 0;
-  if (currentPercent < targetPercentage && targetRatio < 1) {
-    neededClasses = Math.max(0, Math.ceil((targetRatio * simulatedConducted - simulatedAttended) / (1 - targetRatio)));
+  const safeTargetPct = Math.min(99, Math.max(1, Number(targetPercentage) || 75));
+  const targetRatio = safeTargetPct / 100;
+  const isSessionStrict = summary.policy === 'SESSION_STRICT';
+
+  // Use policy-appropriate metrics when calculating needed/missable buffer
+  const baseConducted = isSessionStrict && summary.totalConducted > 0 ? summary.totalWorkingDays : simulatedConducted;
+  const baseAttended = isSessionStrict && summary.totalConducted > 0 ? summary.awardedDays : simulatedAttended;
+  const activePercent = baseConducted > 0 ? (baseAttended / baseConducted) * 100 : 100;
+
+  // Calculation 1: How many consecutive sessions (0.5d) or class hours needed?
+  let neededCount = 0;
+  if (activePercent < safeTargetPct && targetRatio < 1 && baseConducted > 0) {
+    const rawDelta = Math.max(0, (targetRatio * baseConducted - baseAttended) / (1 - targetRatio));
+    neededCount = isSessionStrict && summary.totalConducted > 0
+      ? Math.max(0, Math.ceil(rawDelta / 0.5))
+      : Math.max(0, Math.ceil(rawDelta));
   }
 
-  // Calculation 2: If current >= target, how many classes can safely be missed?
-  // attended / (conducted + y) >= targetRatio
-  // attended >= targetRatio * conducted + targetRatio * y
-  // y = floor((attended - targetRatio * conducted) / targetRatio)
-  let canMissClasses = 0;
-  if (currentPercent >= targetPercentage && targetRatio > 0) {
-    canMissClasses = Math.max(0, Math.floor((simulatedAttended - targetRatio * simulatedConducted) / targetRatio));
+  // Calculation 2: How many sessions (0.5d) or class hours can safely be missed?
+  let canMissCount = 0;
+  if (activePercent >= safeTargetPct && targetRatio > 0 && baseConducted > 0) {
+    const rawBuffer = Math.max(0, (baseAttended - targetRatio * baseConducted) / targetRatio);
+    canMissCount = isSessionStrict && summary.totalConducted > 0
+      ? Math.max(0, Math.floor(rawBuffer / 0.5))
+      : Math.max(0, Math.floor(rawBuffer));
   }
+
+  const displayPercent = summary.totalConducted > 0 ? summary.overallPercentage : activePercent;
 
   return (
     <Modal
@@ -55,24 +71,45 @@ export const AttendanceCalculatorModal: React.FC<AttendanceCalculatorModalProps>
     >
       <div className="space-y-6">
         {/* Overall Status Banner */}
-        <div className="bg-gradient-to-r from-blue-900 to-indigo-900 text-white p-5 rounded-2xl shadow-sm">
-          <div className="flex items-center justify-between">
+        <div className="bg-gradient-to-r from-blue-900 to-indigo-900 text-white p-5 rounded-2xl shadow-sm space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
             <div>
-              <p className="text-xs text-blue-200 uppercase font-semibold">Institutional Current Attendance</p>
-              <h3 className="text-3xl font-black mt-1 text-white">{currentPercent.toFixed(1)}%</h3>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs text-blue-200 uppercase font-semibold">Institutional Current Attendance</p>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-white/15 text-white border border-white/20">
+                  {summary.policyLabel}
+                </span>
+              </div>
+              <h3 className="text-3xl font-black mt-1 text-white">
+                {summary.totalConducted > 0 ? `${summary.overallPercentage.toFixed(1)}%` : 'No Sessions'}
+              </h3>
               <p className="text-xs text-blue-200 mt-1">
-                {simulatedAttended} Attended / {simulatedConducted} Total Conducted Sessions
+                {isSessionStrict && summary.totalWorkingDays > 0
+                  ? `${summary.awardedDays} / ${summary.totalWorkingDays} Working Days Awarded (${simulatedAttended}/${simulatedConducted} hrs)`
+                  : `${simulatedAttended} Attended / ${simulatedConducted} Total Conducted Periods`}
               </p>
             </div>
             <div className="text-right">
               <Badge
-                variant={currentPercent >= targetPercentage ? 'success' : 'danger'}
+                variant={displayPercent >= safeTargetPct ? 'success' : 'danger'}
                 className="text-xs font-bold px-3 py-1"
               >
-                {currentPercent >= targetPercentage ? 'On Track' : 'Below Target'}
+                {summary.totalConducted === 0
+                  ? 'Pending Sessions'
+                  : displayPercent >= safeTargetPct
+                    ? 'On Track'
+                    : 'Below Target'}
               </Badge>
             </div>
           </div>
+
+          {isSessionStrict && (
+            <div className="text-[11px] bg-white/10 border border-white/15 rounded-xl px-3 py-2 text-blue-100">
+              {summary.halfDaysLost > 0
+                ? `${summary.halfDaysLost} FN/AN half-day session(s) forfeited due to partial absences (-${(summary.halfDaysLost * 0.5).toFixed(1)} working days). Forecast counts 0.5d FN/AN sessions; subjects below remain Hour-Wise:`
+                : 'Strict Session-Wise Rule active: any single period absence in FN or AN cuts 0.5 working day. Forecast counts 0.5d FN/AN sessions; subjects below remain Hour-Wise:'}
+            </div>
+          )}
         </div>
 
         {/* Target Slider */}
@@ -82,7 +119,7 @@ export const AttendanceCalculatorModal: React.FC<AttendanceCalculatorModalProps>
               <Target className="w-4 h-4 text-blue-600" /> Target Attendance Goal
             </label>
             <span className="text-sm font-black text-blue-600 bg-blue-100 px-2.5 py-0.5 rounded-md">
-              {targetPercentage}%
+              {safeTargetPct}%
             </span>
           </div>
           <input
@@ -90,7 +127,7 @@ export const AttendanceCalculatorModal: React.FC<AttendanceCalculatorModalProps>
             min={60}
             max={95}
             step={1}
-            value={targetPercentage}
+            value={safeTargetPct}
             onChange={e => setTargetPercentage(Number(e.target.value))}
             className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
           />
@@ -106,31 +143,41 @@ export const AttendanceCalculatorModal: React.FC<AttendanceCalculatorModalProps>
         <div className="grid grid-cols-2 gap-4">
           <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
             <CheckCircle className="w-6 h-6 text-emerald-600 mx-auto mb-1" />
-            <p className="text-xs text-emerald-800 font-semibold uppercase">Classes You Can Miss</p>
-            <p className="text-3xl font-black text-emerald-700 mt-1">{canMissClasses}</p>
+            <p className="text-xs text-emerald-800 font-semibold uppercase">
+              {isSessionStrict && summary.totalConducted > 0 ? 'FN/AN Sessions Can Miss' : 'Hours You Can Miss'}
+            </p>
+            <p className="text-3xl font-black text-emerald-700 mt-1">{canMissCount}</p>
             <p className="text-[10px] text-emerald-600 mt-1">
-              before dropping below {targetPercentage}%
+              before dropping below {safeTargetPct}%
             </p>
           </div>
 
           <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-center">
             <AlertTriangle className="w-6 h-6 text-rose-600 mx-auto mb-1" />
-            <p className="text-xs text-rose-800 font-semibold uppercase">Classes Must Attend</p>
-            <p className="text-3xl font-black text-rose-700 mt-1">{neededClasses}</p>
+            <p className="text-xs text-rose-800 font-semibold uppercase">
+              {isSessionStrict && summary.totalConducted > 0 ? 'FN/AN Sessions Must Attend' : 'Hours Must Attend'}
+            </p>
+            <p className="text-3xl font-black text-rose-700 mt-1">{neededCount}</p>
             <p className="text-[10px] text-rose-600 mt-1">
-              consecutively to reach {targetPercentage}%
+              consecutively to reach {safeTargetPct}%
             </p>
           </div>
         </div>
 
         {/* Per-Course Breakdown in FYUGP */}
         <div>
-          <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2.5">
-            FYUGP Course-Wise Requirement Breakdown
-          </h4>
+          <div className="flex items-center justify-between mb-2.5">
+            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+              FYUGP Course-Wise Requirement Breakdown
+            </h4>
+            <span className="text-[10px] font-semibold text-slate-500">Always Hour-Wise</span>
+          </div>
           <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-52 overflow-y-auto">
             {summary.courses.map((crs, idx) => {
-              const crsAttended = crs.presentCount + crs.odCount + crs.medicalLeaveCount;
+              const crsAttended =
+                crs.presentCount +
+                crs.odCount +
+                (settings.enableOdAutomation ? crs.medicalLeaveCount : 0);
               const crsPercent = crs.conductedCount > 0 ? (crsAttended / crs.conductedCount) * 100 : 100;
               let crsNeeded = 0;
               let crsCanMiss = 0;

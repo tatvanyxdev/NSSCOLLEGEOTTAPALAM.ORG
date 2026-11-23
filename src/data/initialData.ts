@@ -88,24 +88,24 @@ export const initialSemesters: Semester[] = [
 ];
 
 export const initialDepartments: Department[] = [
-  { id: 'dept-eng', code: 'ENG', name: 'Department of English', type: 'ACADEMIC', isActive: true, establishedYear: 1961 },
-  { id: 'dept-hin', code: 'HIN', name: 'Department of Hindi', type: 'ACADEMIC', isActive: true, establishedYear: 1961 },
-  { id: 'dept-mal', code: 'MAL', name: 'Department of Malayalam', type: 'ACADEMIC', isActive: true, establishedYear: 1961 },
-  { id: 'dept-eco', code: 'ECO', name: 'Department of Economics', type: 'ACADEMIC', isActive: true, establishedYear: 1961 },
-  { id: 'dept-his', code: 'HIS', name: 'Department of History', type: 'ACADEMIC', isActive: true, establishedYear: 1965 },
-  { id: 'dept-bot', code: 'BOT', name: 'Department of Botany', type: 'ACADEMIC', isActive: true, establishedYear: 1967 },
-  { id: 'dept-che', code: 'CHE', name: 'Department of Chemistry', type: 'ACADEMIC', isActive: true, establishedYear: 1967 },
-  { id: 'dept-cs', code: 'CSC', name: 'Department of Computer Science', type: 'ACADEMIC', isActive: true, establishedYear: 1995 },
-  { id: 'dept-ic', code: 'IC', name: 'Department of Industrial Chemistry', type: 'ACADEMIC', isActive: true, establishedYear: 1998 },
-  { id: 'dept-mat', code: 'MAT', name: 'Department of Mathematics', type: 'ACADEMIC', isActive: true, establishedYear: 1961 },
-  { id: 'dept-phy', code: 'PHY', name: 'Department of Physics', type: 'ACADEMIC', isActive: true, establishedYear: 1961 },
-  { id: 'dept-zoo', code: 'ZOO', name: 'Department of Zoology', type: 'ACADEMIC', isActive: true, establishedYear: 1967 },
-  { id: 'dept-com', code: 'COM', name: 'Department of Commerce & Management', type: 'ACADEMIC', isActive: true, establishedYear: 1968 },
-  { id: 'dept-ped', code: 'PED', name: 'Department of Physical Education', type: 'SUPPORTING', isActive: true },
-  { id: 'dept-san', code: 'SAN', name: 'Department of Sanskrit', type: 'SUPPORTING', isActive: true },
-  { id: 'dept-pol', code: 'POL', name: 'Department of Political Science', type: 'SUPPORTING', isActive: true },
-  { id: 'dept-sta', code: 'STA', name: 'Department of Statistics', type: 'SUPPORTING', isActive: true },
-  { id: 'dept-adm', code: 'ADM', name: 'Administrative Office', type: 'ADMINISTRATIVE', isActive: true }
+  { id: 'dept-eng', code: 'ENG', name: 'Department of English', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1961 },
+  { id: 'dept-hin', code: 'HIN', name: 'Department of Hindi', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1961 },
+  { id: 'dept-mal', code: 'MAL', name: 'Department of Malayalam', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1961 },
+  { id: 'dept-eco', code: 'ECO', name: 'Department of Economics', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1961 },
+  { id: 'dept-his', code: 'HIS', name: 'Department of History', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1965 },
+  { id: 'dept-bot', code: 'BOT', name: 'Department of Botany', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1967 },
+  { id: 'dept-che', code: 'CHE', name: 'Department of Chemistry', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1967 },
+  { id: 'dept-cs', code: 'CSC', name: 'Department of Computer Science', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1995 },
+  { id: 'dept-ic', code: 'IC', name: 'Department of Industrial Chemistry', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1998 },
+  { id: 'dept-mat', code: 'MAT', name: 'Department of Mathematics', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1961 },
+  { id: 'dept-phy', code: 'PHY', name: 'Department of Physics', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1961 },
+  { id: 'dept-zoo', code: 'ZOO', name: 'Department of Zoology', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1967 },
+  { id: 'dept-com', code: 'COM', name: 'Department of Commerce & Management', type: 'ACADEMIC', isActive: true, attendancePolicy: 'HOUR_WISE', establishedYear: 1968 },
+  { id: 'dept-ped', code: 'PED', name: 'Department of Physical Education', type: 'SUPPORTING', isActive: true, attendancePolicy: 'HOUR_WISE' },
+  { id: 'dept-san', code: 'SAN', name: 'Department of Sanskrit', type: 'SUPPORTING', isActive: true, attendancePolicy: 'HOUR_WISE' },
+  { id: 'dept-pol', code: 'POL', name: 'Department of Political Science', type: 'SUPPORTING', isActive: true, attendancePolicy: 'HOUR_WISE' },
+  { id: 'dept-sta', code: 'STA', name: 'Department of Statistics', type: 'SUPPORTING', isActive: true, attendancePolicy: 'HOUR_WISE' },
+  { id: 'dept-adm', code: 'ADM', name: 'Administrative Office', type: 'ADMINISTRATIVE', isActive: true, attendancePolicy: 'HOUR_WISE' }
 ];
 
 export const initialProgrammes: Programme[] = [
@@ -144,12 +144,12 @@ export const initialCourseCategories: CourseCategory[] = [
 ];
 
 export const initialTimetablePeriods: TimetablePeriod[] = [
-  { id: 'period-1', periodNumber: 1, label: 'Period 1', startTime: '09:30', endTime: '10:30', isBreak: false, isActive: true },
-  { id: 'period-2', periodNumber: 2, label: 'Period 2', startTime: '10:30', endTime: '11:30', isBreak: false, isActive: true },
-  { id: 'period-3', periodNumber: 3, label: 'Period 3', startTime: '11:30', endTime: '12:30', isBreak: false, isActive: true },
-  { id: 'period-lunch', periodNumber: 0, label: 'Lunch Break', startTime: '12:30', endTime: '01:30', isBreak: true, isActive: true },
-  { id: 'period-4', periodNumber: 4, label: 'Period 4', startTime: '01:30', endTime: '02:30', isBreak: false, isActive: true },
-  { id: 'period-5', periodNumber: 5, label: 'Period 5', startTime: '02:30', endTime: '03:30', isBreak: false, isActive: true }
+  { id: 'period-1', periodNumber: 1, label: 'Period 1', startTime: '09:30', endTime: '10:30', session: 'FN', isBreak: false, isActive: true },
+  { id: 'period-2', periodNumber: 2, label: 'Period 2', startTime: '10:30', endTime: '11:30', session: 'FN', isBreak: false, isActive: true },
+  { id: 'period-3', periodNumber: 3, label: 'Period 3', startTime: '11:30', endTime: '12:30', session: 'FN', isBreak: false, isActive: true },
+  { id: 'period-lunch', periodNumber: 0, label: 'Lunch Break', startTime: '12:30', endTime: '01:30', session: 'FN', isBreak: true, isActive: true },
+  { id: 'period-4', periodNumber: 4, label: 'Period 4', startTime: '01:30', endTime: '02:30', session: 'AN', isBreak: false, isActive: true },
+  { id: 'period-5', periodNumber: 5, label: 'Period 5', startTime: '02:30', endTime: '03:30', session: 'AN', isBreak: false, isActive: true }
 ];
 
 // Academic Masters & Course Architecture (Starts empty - add courses manually or upload spreadsheet)

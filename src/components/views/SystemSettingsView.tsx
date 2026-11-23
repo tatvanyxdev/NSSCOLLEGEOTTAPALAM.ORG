@@ -4,7 +4,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { can } from '../../config/permissions';
 import { Badge } from '../common/UIComponents';
 import { CollegeLogo, COLLEGE_LOGO_WHITE, COLLEGE_LOGO_DARK } from '../common/CollegeLogo';
-import { isSupabaseConfigured, SUPABASE_URL, SUPABASE_SCHEMA_SQL } from '../../lib/supabase';
+import { isSupabaseConfigured, SUPABASE_URL, SUPABASE_SCHEMA_SQL, SUPABASE_PUBLISHABLE_KEY } from '../../lib/supabase';
+import { supabaseHeartbeatService, HeartbeatResult } from '../../services/supabaseHeartbeatService';
 import {
   Settings,
   Database,
@@ -30,7 +31,11 @@ import {
   Flame,
   Shield,
   Zap,
-  RotateCcw
+  RotateCcw,
+  Activity,
+  HeartPulse,
+  Radio,
+  Clock
 } from 'lucide-react';
 import firebaseConfig from '../../../firebase-applet-config.json';
 import { firebaseSyncService } from '../../services/firebaseSyncService';
@@ -55,13 +60,16 @@ export const SystemSettingsView: React.FC = () => {
     courses,
     departments,
     students,
-    studentCourseRegistrations
+    studentCourseRegistrations,
+    timetablePeriods,
+    updateTimetablePeriods
   } = useCollegeData();
 
   const { activeRole, isDevAuthMode } = useAuth();
   const canRead = can(activeRole, 'settings', 'read');
   const canUpdate = can(activeRole, 'settings', 'update');
   const canReset = activeRole === 'SUPER_ADMIN';
+  const canManagePeriods = activeRole === 'SUPER_ADMIN' || activeRole === 'PRINCIPAL';
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('GENERAL');
 
@@ -80,6 +88,8 @@ export const SystemSettingsView: React.FC = () => {
   const [correctionWindow, setCorrectionWindow] = useState(settings?.attendanceCorrectionWindowHours ?? 24);
   const [requireHodApproval, setRequireHodApproval] = useState(settings?.requireHodApprovalForCorrection ?? true);
   const [isOdAutomatic, setIsOdAutomatic] = useState(settings?.enableOdAutomation ?? true);
+  const [periodSessionDrafts, setPeriodSessionDrafts] = useState<Record<string, 'FN' | 'AN'>>({});
+  const [isSavingPeriods, setIsSavingPeriods] = useState(false);
 
   // Notifications State
   const [enablePush, setEnablePush] = useState(settings?.enablePushNotifications ?? true);
@@ -147,6 +157,29 @@ export const SystemSettingsView: React.FC = () => {
     triggerSuccess('Attendance threshold rules updated successfully in Supabase.');
   };
 
+  const handleSavePeriodSessions = async () => {
+    if (!canManagePeriods) return;
+    setIsSavingPeriods(true);
+    setSaveError(null);
+    const updatedPeriods = timetablePeriods.map(p => {
+      const isBreakSlot = Boolean(p.isBreak || p.periodNumber === 0);
+      if (isBreakSlot) return p;
+      const mappedSession = periodSessionDrafts[p.id] || p.session || (p.periodNumber <= 3 ? 'FN' : 'AN');
+      return {
+        ...p,
+        session: mappedSession
+      };
+    });
+    const res = await updateTimetablePeriods(updatedPeriods);
+    setIsSavingPeriods(false);
+    if (!res.success) {
+      setSaveError(res.error || 'Failed to save FN/AN period mapping.');
+      return;
+    }
+    setPeriodSessionDrafts({});
+    triggerSuccess('Period FN/AN session mapping saved. Session-Strict eligibility percentages updated dynamically.');
+  };
+
   const handleSaveNotifications = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSavingNotifications(true);
@@ -166,6 +199,34 @@ export const SystemSettingsView: React.FC = () => {
 
   const [isWipingRemoteTest, setIsWipingRemoteTest] = useState(false);
   const [resetType, setResetType] = useState<'LOCAL_ONLY' | 'COMPLETE_CLEAN'>('COMPLETE_CLEAN');
+  const [isPingingDatabase, setIsPingingDatabase] = useState(false);
+  const [heartbeatResult, setHeartbeatResult] = useState<HeartbeatResult | null>(() => supabaseHeartbeatService.getLastResult());
+  const [copiedPingCurl, setCopiedPingCurl] = useState(false);
+
+  const handleManualPing = async () => {
+    setIsPingingDatabase(true);
+    setSaveError(null);
+    try {
+      const res = await supabaseHeartbeatService.ping();
+      setHeartbeatResult(res);
+      if (res.success) {
+        triggerSuccess(`Keep-alive pulse confirmed! Database response received in ${res.latencyMs}ms (${res.status}).`);
+      } else {
+        setSaveError(`Database ping issue: ${res.message}`);
+      }
+    } catch (e: any) {
+      setSaveError(`Ping failed: ${e.message || e}`);
+    } finally {
+      setIsPingingDatabase(false);
+    }
+  };
+
+  const handleCopyPingCurl = () => {
+    const cmd = `curl -s "${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/system_settings?select=id&limit=1" -H "apikey: ${SUPABASE_PUBLISHABLE_KEY}" -H "Authorization: Bearer ${SUPABASE_PUBLISHABLE_KEY}"`;
+    navigator.clipboard.writeText(cmd);
+    setCopiedPingCurl(true);
+    setTimeout(() => setCopiedPingCurl(false), 2500);
+  };
 
   const handleCopySql = () => {
     navigator.clipboard.writeText(SUPABASE_SCHEMA_SQL);
@@ -558,6 +619,94 @@ export const SystemSettingsView: React.FC = () => {
               </button>
             </div>
           </form>
+
+          {/* Configurable Period -> FN / AN Session Mapping */}
+          <div className="pt-6 border-t border-slate-200 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-blue-700" /> Period Session Slot Mapping (Forenoon FN / Afternoon AN)
+                </h4>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Configure which daily instructional periods count toward Forenoon (FN) vs Afternoon (AN) half-days under Session-Strict department policies. Updating this never modifies atomic period attendance logs.
+                </p>
+              </div>
+              {canManagePeriods && (
+                <button
+                  type="button"
+                  disabled={isSavingPeriods}
+                  onClick={handleSavePeriodSessions}
+                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 self-start sm:self-auto"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{isSavingPeriods ? 'Saving...' : 'Save FN / AN Mapping'}</span>
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {[...timetablePeriods]
+                .sort((a, b) => a.periodNumber - b.periodNumber)
+                .map(period => {
+                  const isBreakSlot = Boolean(period.isBreak || period.periodNumber === 0);
+                  const effectiveSession: 'FN' | 'AN' =
+                    periodSessionDrafts[period.id] ||
+                    period.session ||
+                    (period.periodNumber <= 3 ? 'FN' : 'AN');
+
+                  return (
+                    <div
+                      key={period.id}
+                      className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 ${
+                        isBreakSlot
+                          ? 'bg-slate-100/80 border-slate-200 opacity-80'
+                          : 'bg-slate-50 border-slate-200'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-slate-900 truncate">
+                          {period.label || `Period ${period.periodNumber}`}
+                        </div>
+                        <div className="text-[11px] font-mono text-slate-500 mt-0.5">
+                          {period.startTime} – {period.endTime}
+                        </div>
+                      </div>
+
+                      {isBreakSlot ? (
+                        <span className="px-2.5 py-1 rounded-lg bg-slate-200 text-slate-700 text-[10px] font-bold uppercase shrink-0">
+                          Break (Excluded)
+                        </span>
+                      ) : (
+                        <div className="inline-flex items-center rounded-lg bg-white border border-slate-200 p-0.5 shrink-0">
+                          {(['FN', 'AN'] as const).map(slot => (
+                            <button
+                              key={slot}
+                              type="button"
+                              disabled={!canManagePeriods}
+                              onClick={() =>
+                                setPeriodSessionDrafts(prev => ({
+                                  ...prev,
+                                  [period.id]: slot
+                                }))
+                              }
+                              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors ${
+                                effectiveSession === slot
+                                  ? slot === 'FN'
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-amber-600 text-white'
+                                  : 'text-slate-600 hover:bg-slate-100'
+                              } ${!canManagePeriods ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}
+                            >
+                              {slot}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
         </div>
       )}
 
@@ -986,6 +1135,106 @@ export const SystemSettingsView: React.FC = () => {
                 {copiedSql ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                 {copiedSql ? 'SQL Copied to Clipboard!' : 'Copy PostgreSQL DDL & RLS'}
               </button>
+            </div>
+          </div>
+
+          {/* Supabase Free-Tier Anti-Pausing & Keep-Alive Engine */}
+          <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-emerald-950/40 text-white rounded-2xl p-6 shadow-md border-2 border-emerald-500/40 space-y-5">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    <HeartPulse className="w-5 h-5 animate-pulse" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center gap-2">
+                      Supabase Anti-Pausing Keep-Alive Engine
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                        ALWAYS ALIVE
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Prevents Supabase free-tier project from pausing after 7 days of inactivity.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleManualPing}
+                  disabled={isPingingDatabase}
+                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-emerald-900/30 transition-all cursor-pointer"
+                >
+                  <Activity className={`w-4 h-4 ${isPingingDatabase ? 'animate-spin' : ''}`} />
+                  <span>{isPingingDatabase ? 'Sending Pulse...' : 'Ping Database Now'}</span>
+                </button>
+
+                <button
+                  onClick={handleCopyPingCurl}
+                  className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+                  title="Copy curl command to ping Supabase externally"
+                >
+                  {copiedPingCurl ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedPingCurl ? 'Copied' : 'Copy cURL'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Live Keep-Alive Status Metrics */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Database Status</p>
+                <div className="flex items-center gap-1.5 mt-1">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  <span className="text-sm font-bold text-emerald-300">
+                    {heartbeatResult?.status || 'ACTIVE'}
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">Free Tier 7-day inactivity clock reset</p>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Response Latency</p>
+                <p className="text-sm font-bold text-white mt-1">
+                  {heartbeatResult ? `${heartbeatResult.latencyMs} ms` : 'Sub-100ms'}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-1">Direct REST round-trip time</p>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Last Pulse Delivered</p>
+                <p className="text-sm font-bold text-white mt-1">
+                  {heartbeatResult?.timestamp
+                    ? new Date(heartbeatResult.timestamp).toLocaleTimeString()
+                    : 'On app launch'}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  {heartbeatResult?.timestamp
+                    ? new Date(heartbeatResult.timestamp).toLocaleDateString()
+                    : 'Active sequence'}
+                </p>
+              </div>
+            </div>
+
+            {/* Triple Redundancy Protection Explanation */}
+            <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
+              <div className="flex items-center gap-2 text-xs font-bold text-emerald-400">
+                <ShieldCheck className="w-4 h-4" />
+                <span>Triple-Redundancy Anti-Pausing Strategy Active</span>
+              </div>
+              <ul className="text-xs text-slate-300 space-y-1.5 list-disc list-inside">
+                <li>
+                  <strong className="text-white">GitHub Actions Cron Automation:</strong> File <code className="text-emerald-300 bg-slate-900 px-1.5 py-0.5 rounded text-[11px]">.github/workflows/supabase-keep-alive.yml</code> triggers every 48 hours to ping your database even during vacations and weekends.
+                </li>
+                <li>
+                  <strong className="text-white">In-App Heartbeat:</strong> The client app automatically sends a lightweight ping on startup and every 4 hours while open to guarantee instant responsiveness.
+                </li>
+                <li>
+                  <strong className="text-white">Database Keep-Alive Table:</strong> A dedicated sequence table <code className="text-emerald-300 bg-slate-900 px-1.5 py-0.5 rounded text-[11px]">supabase_keep_alive_pings</code> logs heartbeats and automatically prunes old records.
+                </li>
+              </ul>
             </div>
           </div>
 

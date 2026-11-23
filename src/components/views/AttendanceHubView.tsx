@@ -55,7 +55,8 @@ export const AttendanceHubView: React.FC = () => {
     correctionRequests,
     reviewCorrectionBatch,
     getStudentAttendanceSummary,
-    exportAttendanceReportToCsv
+    exportAttendanceReportToCsv,
+    settings
   } = useCollegeData();
 
   const { user, activeRole } = useAuth();
@@ -64,7 +65,9 @@ export const AttendanceHubView: React.FC = () => {
   const isPrincipal = activeRole === 'PRINCIPAL' || activeRole === 'SUPER_ADMIN';
 
   // Identify current faculty / student
-  const currentFaculty = faculty.find(f => f.id === user?.id || f.email === user?.email);
+  const currentFaculty = faculty.find(
+    f => f.id === user?.id || (user?.email && f.email?.toLowerCase() === user.email.toLowerCase())
+  );
   const currentStudent =
     user?.studentProfile ||
     students.find(
@@ -75,7 +78,13 @@ export const AttendanceHubView: React.FC = () => {
         (user?.email && s.email.toLowerCase() === user.email.toLowerCase())
     );
 
-  const hodDeptId = isHOD ? (user?.departmentId || currentFaculty?.departmentId) : undefined;
+  const hodDeptId = isHOD
+    ? user?.departmentId ||
+      currentFaculty?.departmentId ||
+      departments.find(
+        d => d.hodFacultyId === user?.id || (currentFaculty && d.hodFacultyId === currentFaculty.id)
+      )?.id
+    : undefined;
   const tutorCohort = getClassTutorCohort(user?.id);
   const isClassTutor = activeRole === 'CLASS_TUTOR' || !!tutorCohort;
 
@@ -144,9 +153,9 @@ export const AttendanceHubView: React.FC = () => {
         }
       }
 
-      // HOD scoping
-      if (isHOD && hodDeptId) {
-        if (offering?.departmentId !== hodDeptId) {
+      // HOD scoping (fail-closed if unresolved)
+      if (isHOD) {
+        if (!hodDeptId || offering?.departmentId !== hodDeptId) {
           return false;
         }
       }
@@ -191,17 +200,25 @@ export const AttendanceHubView: React.FC = () => {
     searchQuery
   ]);
 
-  // Filter pending corrections for HOD review
+  // Filter pending corrections for HOD / scoped faculty review
   const departmentCorrectionRequests = useMemo(() => {
+    const actorIds = new Set([user?.id, currentFaculty?.id].filter(Boolean) as string[]);
     return correctionRequests.filter(req => {
       const sess = classSessions.find(s => s.id === req.classSessionId);
       const offering = courseOfferings.find(o => o.id === sess?.courseOfferingId);
-      if (isHOD && hodDeptId) {
-        return offering?.departmentId === hodDeptId;
+      if (isHOD) {
+        return Boolean(hodDeptId && offering?.departmentId === hodDeptId);
+      }
+      if (['TEACHER', 'CLASS_TUTOR', 'COURSE_COORDINATOR'].includes(activeRole)) {
+        const byMe = req.requestedByFacultyId ? actorIds.has(req.requestedByFacultyId) : false;
+        const mySess =
+          (sess?.facultyId && actorIds.has(sess.facultyId)) ||
+          (sess?.substituteFacultyId && actorIds.has(sess.substituteFacultyId));
+        return byMe || Boolean(mySess);
       }
       return true;
     });
-  }, [correctionRequests, classSessions, courseOfferings, isHOD, hodDeptId]);
+  }, [correctionRequests, classSessions, courseOfferings, isHOD, hodDeptId, activeRole, user?.id, currentFaculty?.id]);
 
   const pendingCorrectionRequests = departmentCorrectionRequests.filter(r => r.status === 'PENDING');
 
@@ -319,7 +336,29 @@ export const AttendanceHubView: React.FC = () => {
 
             {!isStudent && (
               <button
-                onClick={() => exportAttendanceReportToCsv(hodDeptId || undefined)}
+                onClick={() => {
+                  const deptCode = departments.find(d => d.id === hodDeptId)?.code;
+                  const scopedTeacherStudents =
+                    activeRole === 'TEACHER'
+                      ? Array.from(
+                          new Set(
+                            filteredSessions.flatMap(s =>
+                              getCourseGroupRegisteredStudents(s.courseGroupId).map(st => st.id)
+                            )
+                          )
+                        )
+                      : undefined;
+                  exportAttendanceReportToCsv(
+                    hodDeptId
+                      ? `NSS_Attendance_${deptCode || 'Dept'}.csv`
+                      : 'NSS_College_Attendance_Report.csv',
+                    hodDeptId
+                      ? { departmentId: hodDeptId }
+                      : scopedTeacherStudents
+                        ? { studentIds: scopedTeacherStudents }
+                        : undefined
+                  );
+                }}
                 className="flex-1 sm:flex-none px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 border border-slate-200 shadow-2xs transition-all"
               >
                 <Download className="w-4 h-4" /> <span>Export CSV</span>
@@ -715,11 +754,25 @@ export const AttendanceHubView: React.FC = () => {
 
                 const registeredStudents = getCourseGroupRegisteredStudents(session.courseGroupId);
                 const sessionRecords = attendanceRecords.filter(r => r.classSessionId === session.id);
-                const presentRecords = sessionRecords.filter(r => r.status === 'PRESENT' || r.status === 'OD');
+                const activeRecords = sessionRecords.filter(r => r.status !== 'CANCELLED');
+                const presentRecords = activeRecords.filter(
+                  r =>
+                    r.status === 'PRESENT' ||
+                    r.status === 'OD' ||
+                    r.status === 'DUTY_LEAVE' ||
+                    (settings.enableOdAutomation && r.status === 'MEDICAL_LEAVE')
+                );
+                const denom = activeRecords.length > 0
+                  ? activeRecords.length
+                  : Math.max(0, registeredStudents.length - sessionRecords.filter(r => r.status === 'CANCELLED').length);
                 const percent =
-                  registeredStudents.length > 0 && session.attendanceSubmitted
-                    ? Math.round((presentRecords.length / registeredStudents.length) * 100)
-                    : null;
+                  session.status === 'CANCELLED'
+                    ? null
+                    : denom > 0 && session.attendanceSubmitted
+                      ? Math.round((presentRecords.length / denom) * 100)
+                      : session.attendanceSubmitted
+                        ? null
+                        : null;
 
                 // Student specific status in this session
                 const myRecord = isStudent && currentStudent
@@ -745,17 +798,23 @@ export const AttendanceHubView: React.FC = () => {
                             variant={
                               myRecord?.status === 'PRESENT'
                                 ? 'success'
-                                : myRecord?.status === 'OD'
+                                : myRecord?.status === 'OD' || myRecord?.status === 'DUTY_LEAVE'
                                 ? 'purple'
+                                : myRecord?.status === 'CANCELLED'
+                                ? 'neutral'
                                 : 'danger'
                             }
                             size="sm"
                           >
                             {myRecord ? myRecord.status : 'NOT MARKED'}
                           </Badge>
+                        ) : session.status === 'CANCELLED' ? (
+                          <Badge variant="neutral" size="sm">
+                            Cancelled
+                          </Badge>
                         ) : session.attendanceSubmitted ? (
                           <Badge variant="success" size="sm">
-                            ✓ {percent}% Attendance
+                            {percent !== null ? `✓ ${percent}% Attendance` : '✓ Submitted'}
                           </Badge>
                         ) : (
                           <Badge variant="danger" size="sm">
@@ -1027,7 +1086,15 @@ export const AttendanceHubView: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => exportAttendanceReportToCsv(tutorCohort?.department?.id)}
+                  onClick={() =>
+                    exportAttendanceReportToCsv(
+                      `NSS_Cohort_Attendance_${tutorCohort?.programme?.code || 'Register'}.csv`,
+                      {
+                        departmentId: tutorCohort?.department?.id,
+                        studentIds: tutorCohort?.cohortStudents?.map(s => s.id)
+                      }
+                    )
+                  }
                   className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-all"
                 >
                   <Download className="w-4 h-4" /> Export Cohort Roster (CSV)
@@ -1043,14 +1110,27 @@ export const AttendanceHubView: React.FC = () => {
                 summary: getStudentAttendanceSummary(s.id)
               }));
 
-              const shortageCount = studentSummaries.filter(s => s.summary.overallPercentage < 75).length;
-              const criticalCount = studentSummaries.filter(s => s.summary.overallPercentage < 65).length;
-              const eligibleCount = studentSummaries.filter(s => s.summary.overallPercentage >= 75).length;
+              const minPct = settings.minAttendancePercentage || 75;
+              const shortageCount = studentSummaries.filter(
+                s => s.summary.totalConducted > 0 && s.summary.isShortage
+              ).length;
+              const criticalCount = studentSummaries.filter(
+                s => s.summary.totalConducted > 0 && s.summary.overallPercentage < 65
+              ).length;
+              const eligibleCount = studentSummaries.filter(
+                s => s.summary.totalConducted === 0 || !s.summary.isShortage
+              ).length;
 
               const filteredList = studentSummaries.filter(item => {
-                if (tutorShortageFilter === 'SHORTAGE') return item.summary.overallPercentage < 75;
-                if (tutorShortageFilter === 'CRITICAL') return item.summary.overallPercentage < 65;
-                if (tutorShortageFilter === 'ELIGIBLE') return item.summary.overallPercentage >= 75;
+                if (tutorShortageFilter === 'SHORTAGE') {
+                  return item.summary.totalConducted > 0 && item.summary.isShortage;
+                }
+                if (tutorShortageFilter === 'CRITICAL') {
+                  return item.summary.totalConducted > 0 && item.summary.overallPercentage < 65;
+                }
+                if (tutorShortageFilter === 'ELIGIBLE') {
+                  return item.summary.totalConducted === 0 || !item.summary.isShortage;
+                }
                 return true;
               });
 
@@ -1157,13 +1237,17 @@ export const AttendanceHubView: React.FC = () => {
                                 <span className="block text-[11px] text-slate-400 font-mono">{student.email}</span>
                               </td>
                               <td className="py-3 px-4 font-semibold text-slate-700">
-                                {summary.totalClasses}
+                                {summary.policy === 'SESSION_STRICT'
+                                  ? `${summary.totalWorkingDays} days (${summary.totalConducted} hrs)`
+                                  : `${summary.totalConducted} hrs`}
                               </td>
                               <td className="py-3 px-4 font-bold text-emerald-700">
-                                {summary.attendedClasses}
+                                {summary.policy === 'SESSION_STRICT'
+                                  ? `${summary.awardedDays} days (${summary.consolidatedTotalAttended} hrs)`
+                                  : summary.consolidatedTotalAttended}
                               </td>
                               <td className="py-3 px-4 font-bold text-rose-600">
-                                {summary.absentClasses}
+                                {summary.totalAbsent}
                               </td>
                               <td className="py-3 px-4">
                                 <div className="flex items-center gap-2">

@@ -22,6 +22,7 @@ export const AttendanceCorrectionsView: React.FC = () => {
     classSessions,
     courses,
     courseOfferings,
+    departments,
     faculty,
     reviewCorrectionRequest,
     settings
@@ -29,8 +30,19 @@ export const AttendanceCorrectionsView: React.FC = () => {
 
   const { user, activeRole } = useAuth();
   const canApprove = can(activeRole, 'attendance', 'approve_correction');
-  const currentFaculty = faculty.find(f => f.id === user?.id || f.email === user?.email);
-  const hodDeptId = activeRole === 'HOD' ? (user?.departmentId || currentFaculty?.departmentId) : undefined;
+  const currentFaculty = faculty.find(
+    f => f.id === user?.id || (user?.email && f.email?.toLowerCase() === user.email.toLowerCase())
+  );
+  const hodDeptId =
+    activeRole === 'HOD'
+      ? user?.departmentId ||
+        currentFaculty?.departmentId ||
+        departments.find(
+          d =>
+            d.hodFacultyId === user?.id ||
+            (currentFaculty && d.hodFacultyId === currentFaculty.id)
+        )?.id
+      : undefined;
 
   const [filterTab, setFilterTab] = useState<'PENDING' | 'APPROVED' | 'REJECTED' | 'ALL'>('PENDING');
   const [rejectRemarks, setRejectRemarks] = useState<Record<string, string>>({});
@@ -40,18 +52,32 @@ export const AttendanceCorrectionsView: React.FC = () => {
   const [requestToReject, setRequestToReject] = useState<string | null>(null);
   const [rejectReasonInput, setRejectReasonInput] = useState('Insufficient documentation provided.');
 
-  const filteredRequests = correctionRequests.filter(r => {
-    if (filterTab !== 'ALL' && r.status !== filterTab) return false;
+  const isTeacherScoped = ['TEACHER', 'CLASS_TUTOR', 'COURSE_COORDINATOR'].includes(activeRole);
+  const actorIds = new Set([user?.id, currentFaculty?.id].filter(Boolean) as string[]);
 
-    // HOD scoping: strictly restrict requests to HOD department offerings
-    if (hodDeptId) {
-      const session = classSessions.find(s => s.id === r.classSessionId);
-      const offering = courseOfferings.find(o => o.id === session?.courseOfferingId);
-      if (offering?.departmentId && offering.departmentId !== hodDeptId) {
-        return false;
-      }
+  const roleScopedRequests = correctionRequests.filter(r => {
+    const session = classSessions.find(s => s.id === r.classSessionId);
+    const offering = courseOfferings.find(o => o.id === session?.courseOfferingId);
+
+    // HOD scoping: strictly restrict requests to offerings in the HOD's resolved department
+    if (activeRole === 'HOD') {
+      return Boolean(hodDeptId && offering?.departmentId === hodDeptId);
     }
 
+    // Teacher / Tutor scoping: requests they submitted or sessions they teach
+    if (isTeacherScoped) {
+      const requestedByMe = r.requestedByFacultyId ? actorIds.has(r.requestedByFacultyId) : false;
+      const mySession =
+        (session?.facultyId && actorIds.has(session.facultyId)) ||
+        (session?.substituteFacultyId && actorIds.has(session.substituteFacultyId));
+      return requestedByMe || Boolean(mySession);
+    }
+
+    return true;
+  });
+
+  const filteredRequests = roleScopedRequests.filter(r => {
+    if (filterTab !== 'ALL' && r.status !== filterTab) return false;
     return true;
   });
 
@@ -107,7 +133,7 @@ export const AttendanceCorrectionsView: React.FC = () => {
         <div className="flex items-center gap-2">
           <h2 className="text-xl font-bold text-slate-900">Attendance Corrections</h2>
           <Badge variant="purple" size="sm">
-            HOD Review
+            {canApprove ? 'HOD Review' : 'My Requests'}
           </Badge>
         </div>
 
@@ -119,7 +145,7 @@ export const AttendanceCorrectionsView: React.FC = () => {
               filterTab === 'PENDING' ? 'bg-amber-500 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Pending ({correctionRequests.filter(r => r.status === 'PENDING').length})
+            Pending ({roleScopedRequests.filter(r => r.status === 'PENDING').length})
           </button>
           <button
             onClick={() => setFilterTab('APPROVED')}
@@ -127,7 +153,7 @@ export const AttendanceCorrectionsView: React.FC = () => {
               filterTab === 'APPROVED' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Approved ({correctionRequests.filter(r => r.status === 'APPROVED').length})
+            Approved ({roleScopedRequests.filter(r => r.status === 'APPROVED').length})
           </button>
           <button
             onClick={() => setFilterTab('REJECTED')}
@@ -135,7 +161,7 @@ export const AttendanceCorrectionsView: React.FC = () => {
               filterTab === 'REJECTED' ? 'bg-rose-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Rejected ({correctionRequests.filter(r => r.status === 'REJECTED').length})
+            Rejected ({roleScopedRequests.filter(r => r.status === 'REJECTED').length})
           </button>
           <button
             onClick={() => setFilterTab('ALL')}
@@ -143,7 +169,7 @@ export const AttendanceCorrectionsView: React.FC = () => {
               filterTab === 'ALL' ? 'bg-slate-800 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            All ({correctionRequests.length})
+            All ({roleScopedRequests.length})
           </button>
         </div>
       </div>

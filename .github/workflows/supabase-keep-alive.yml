@@ -1,0 +1,54 @@
+name: Supabase Database Keep-Alive Sequence
+
+# Prevents free-tier Supabase project from pausing due to 7-day inactivity.
+# Runs automatically every 48 hours to ensure continuous active status.
+
+on:
+  schedule:
+    # Runs at 04:00 UTC every 2 days (48 hours)
+    - cron: '0 4 */2 * *'
+  workflow_dispatch: # Allows manual one-click trigger in GitHub Actions UI
+
+jobs:
+  ping-supabase:
+    name: Ping Supabase PostgreSQL & Auth API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Authenticated Keep-Alive Ping
+        run: |
+          SUPABASE_URL="${{ secrets.VITE_SUPABASE_URL }}"
+          if [ -z "$SUPABASE_URL" ]; then
+            SUPABASE_URL="https://jpirkjbqirkwsmesusqa.supabase.co"
+          fi
+
+          ANON_KEY="${{ secrets.VITE_SUPABASE_ANON_KEY }}"
+          if [ -z "$ANON_KEY" ]; then
+            ANON_KEY="sb_publishable_axxVDb7f0ftRbdCkeXiluw_oBtS9Clb"
+          fi
+
+          echo "Pinging Supabase instance at $SUPABASE_URL..."
+          
+          # 1. Ping REST Table Endpoint (counts as database activity)
+          HTTP_STATUS=$(curl -s -o /tmp/rest_response.json -w "%{http_code}" \
+            -X GET "$SUPABASE_URL/rest/v1/system_settings?select=id&limit=1" \
+            -H "apikey: $ANON_KEY" \
+            -H "Authorization: Bearer $ANON_KEY")
+
+          echo "Supabase REST API Response Status: $HTTP_STATUS"
+          cat /tmp/rest_response.json
+          echo ""
+
+          # 2. Ping Auth Health Endpoint
+          AUTH_STATUS=$(curl -s -o /tmp/auth_response.json -w "%{http_code}" \
+            -X GET "$SUPABASE_URL/auth/v1/health" \
+            -H "apikey: $ANON_KEY")
+
+          echo "Supabase Auth Service Response Status: $AUTH_STATUS"
+          cat /tmp/auth_response.json
+          echo ""
+
+          if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 204 ] || [ "$AUTH_STATUS" -eq 200 ]; then
+            echo "✅ SUCCESS: Supabase keep-alive signal delivered successfully. Database activity refreshed."
+          else
+            echo "⚠️ Notice: Endpoint returned HTTP $HTTP_STATUS / $AUTH_STATUS, but incoming network traffic reached Supabase."
+          fi

@@ -21,9 +21,15 @@ export type StudentStatus =
   | 'SUSPENDED'
   | 'DISCONTINUED';
 
+export type DepartmentAttendancePolicy = 'HOUR_WISE' | 'SESSION_STRICT';
+
+export type SessionSlot = 'FN' | 'AN';
+
 export type AttendanceStatus =
   | 'PRESENT'
   | 'ABSENT'
+  | 'DUTY_LEAVE'
+  | 'CANCELLED'
   | 'OD'
   | 'MEDICAL_LEAVE'
   | 'APPROVED_LEAVE'
@@ -106,6 +112,7 @@ export interface Department {
   type?: 'ACADEMIC' | 'ASSOCIATE' | 'SUPPORTING' | 'ADMINISTRATIVE';
   hodFacultyId?: string;
   isActive: boolean;
+  attendancePolicy?: DepartmentAttendancePolicy;
   description?: string;
   establishedYear?: number;
 }
@@ -379,6 +386,7 @@ export interface TimetablePeriod {
   label: string;
   startTime: string;
   endTime: string;
+  session?: SessionSlot;
   isBreak: boolean;
   isActive: boolean;
 }
@@ -585,10 +593,15 @@ export interface CourseAttendanceSummary {
   credits: number;
   conductedCount: number;
   presentCount: number;
+  dutyLeaveCount?: number;
   odCount: number;
   medicalLeaveCount: number;
   absentCount: number;
+  cancelledCount?: number;
   percentage: number;
+  regularPercentage?: number;
+  consolidatedPercentage?: number;
+  specialDutyCount?: number;
   isShortage: boolean;
   isWarning: boolean;
   classesNeededForMin: number;

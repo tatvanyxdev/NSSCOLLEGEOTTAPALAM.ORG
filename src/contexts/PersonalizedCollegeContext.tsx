@@ -16,8 +16,10 @@ import {
   Course,
   CourseCategory,
   CourseGroup,
-  ClassSession
+  ClassSession,
+  DepartmentAttendancePolicy
 } from '../types';
+import { HalfDayPenaltyDetail } from '../utils/dualAttendanceEngine';
 import {
   initialCirculars,
   initialLeaveRequests,
@@ -50,16 +52,25 @@ export interface ResolvedTimetableSlot {
 }
 
 export interface AttendanceIntelligence {
+  attendancePolicy: DepartmentAttendancePolicy;
+  policyLabel: string;
   overallPercentage: number;
+  hourWisePercentage: number;
   regularPercentage: number;
   consolidatedPercentage: number;
   totalConducted: number;
   totalPresent: number;
+  totalDutyLeave: number;
   totalOd: number;
   totalMedicalLeave: number;
   totalAbsent: number;
+  cancelledCount: number;
   specialDutyApprovedCount: number;
   specialDutyPendingCount: number;
+  totalWorkingDays: number;
+  awardedDays: number;
+  halfDaysLost: number;
+  halfDayPenalties: HalfDayPenaltyDetail[];
   minThreshold: number;
   warningThreshold: number;
   isShortage: boolean;
@@ -175,6 +186,9 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
   });
 
   const switchActiveStudent = (studentId: string) => {
+    if (!user?.isDemoRole && activeRole !== 'SUPER_ADMIN') {
+      return;
+    }
     setSelectedStudentId(studentId);
     localStorage.setItem('nss_active_student_id', studentId);
   };
@@ -201,8 +215,12 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
       if (match) return match;
     }
 
-    // Default to selected student in dev/preview
-    return students.find(s => s.id === selectedStudentId) || students[0] || null;
+    // Allow switcher fallback only for demo preview / super admin inspection
+    if (user?.isDemoRole || activeRole === 'SUPER_ADMIN') {
+      return students.find(s => s.id === selectedStudentId) || students[0] || null;
+    }
+
+    return null;
   }, [activeRole, user, students, selectedStudentId]);
 
   const currentFaculty = useMemo(() => {
@@ -706,7 +724,7 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
     });
   };
 
-  // 6. Attendance Intelligence
+  // 6. Attendance Intelligence (Policy-Aware: Hour-Wise vs Session-Strict)
   const attendanceIntelligence = useMemo<AttendanceIntelligence | null>(() => {
     if (!currentStudent) return null;
 
@@ -714,44 +732,65 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
     const minThreshold = settings.minAttendancePercentage || 75;
     const warningThreshold = settings.warningAttendancePercentage || 70;
 
-    const C = summary.totalConducted;
-    const P = summary.totalPresent + summary.totalOd; // OD counts as present in Calicut University regulations
+    const isSessionStrict = summary.policy === 'SESSION_STRICT';
+    const C = isSessionStrict ? summary.totalWorkingDays : summary.totalConducted;
+    const P = isSessionStrict ? summary.awardedDays : summary.consolidatedTotalAttended;
 
-    const overallPct = C > 0 ? Number(((P / C) * 100).toFixed(1)) : 100;
-    const isShortage = overallPct < minThreshold;
-    const isWarning = !isShortage && overallPct < warningThreshold;
+    const rawOverallPct = summary.totalConducted > 0 ? summary.overallPercentage : 100;
+    const overallPct = Number(rawOverallPct.toFixed(1));
+    const isShortage = summary.totalConducted > 0 && rawOverallPct < minThreshold;
+    const isWarning = summary.totalConducted > 0 && !isShortage && rawOverallPct < warningThreshold;
 
-    // Mathematical calculations for classes needed / can miss
-    // 1. Classes needed to reach minimum threshold:
-    // (P + X) / (C + X) >= T/100  =>  100P + 100X >= T*C + T*X  =>  X*(100 - T) >= T*C - 100P
+    // Mathematical forecast calculations (hours for HOUR_WISE, working days/sessions for SESSION_STRICT)
     let classesNeededToMeetMin = 0;
-    if (isShortage && minThreshold < 100) {
-      const numerator = (minThreshold * C) - (100 * P);
-      const denominator = 100 - minThreshold;
-      classesNeededToMeetMin = Math.max(0, Math.ceil(numerator / denominator));
+    if (isShortage && minThreshold < 100 && C > 0) {
+      if (isSessionStrict) {
+        // Each clean half-day adds 0.5 to both awardedDays (P) and totalWorkingDays (C)
+        const numerator = minThreshold * C - 100 * P;
+        const denominator = 100 - minThreshold;
+        const daysNeeded = Math.max(0, numerator / denominator);
+        classesNeededToMeetMin = Math.max(0, Math.ceil(daysNeeded / 0.5)); // expressed in clean FN/AN sessions needed
+      } else {
+        const numerator = minThreshold * C - 100 * P;
+        const denominator = 100 - minThreshold;
+        classesNeededToMeetMin = Math.max(0, Math.ceil(numerator / denominator));
+      }
     }
 
-    // 2. Classes student can miss safely:
-    // P / (C + Y) >= T/100  =>  100P >= T*C + T*Y  =>  T*Y <= 100P - T*C  =>  Y <= (100P - T*C) / T
     let classesCanMissSafely = 0;
-    if (!isShortage && minThreshold > 0) {
-      const numerator = (100 * P) - (minThreshold * C);
-      classesCanMissSafely = Math.max(0, Math.floor(numerator / minThreshold));
+    if (!isShortage && minThreshold > 0 && C > 0) {
+      if (isSessionStrict) {
+        const numerator = 100 * P - minThreshold * C;
+        const daysCanLose = Math.max(0, numerator / minThreshold);
+        classesCanMissSafely = Math.max(0, Math.floor(daysCanLose / 0.5)); // half-day sessions
+      } else {
+        const numerator = 100 * P - minThreshold * C;
+        classesCanMissSafely = Math.max(0, Math.floor(numerator / minThreshold));
+      }
     }
 
     const shortageCourseCount = summary.courses.filter(c => c.isShortage).length;
 
     return {
+      attendancePolicy: summary.policy,
+      policyLabel: summary.policyLabel,
       overallPercentage: overallPct,
+      hourWisePercentage: Number((summary.hourWisePercentage ?? overallPct).toFixed(1)),
       regularPercentage: summary.regularPercentage,
-      consolidatedPercentage: summary.consolidatedPercentage,
+      consolidatedPercentage: overallPct,
       totalConducted: summary.totalConducted,
       totalPresent: summary.totalPresent,
+      totalDutyLeave: summary.totalDutyLeave,
       totalOd: summary.totalOd,
       totalMedicalLeave: summary.totalMedicalLeave,
       totalAbsent: summary.totalAbsent,
+      cancelledCount: summary.cancelledCount,
       specialDutyApprovedCount: summary.specialDutyApprovedCount,
       specialDutyPendingCount: summary.specialDutyPendingCount,
+      totalWorkingDays: summary.totalWorkingDays,
+      awardedDays: summary.awardedDays,
+      halfDaysLost: summary.halfDaysLost,
+      halfDayPenalties: summary.halfDayPenalties,
       minThreshold,
       warningThreshold,
       isShortage,

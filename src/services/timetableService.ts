@@ -2,7 +2,7 @@ import { supabase } from '../lib/supabase';
 import { TimetablePeriod, TimetableEntry } from '../types';
 import { mapTimetablePeriodFromDb, mapTimetableEntryFromDb } from '../lib/dataMappers';
 import { toValidUuid } from '../lib/uuidMapping';
-import { safePeriodId, safeOfferingId, safeGroupId, safeFacultyId } from '../lib/foreignKeyHelper';
+import { safePeriodId, safeOfferingId, safeGroupId, safeFacultyId, refreshIdCache } from '../lib/foreignKeyHelper';
 import { resilientInsert, resilientUpdate } from '../lib/resilientMutation';
 
 const dayToWeekdayInt = (day?: string): number => {
@@ -44,14 +44,24 @@ export const timetableService = {
 
   async createEntry(entry: Omit<TimetableEntry, 'id'>): Promise<{ data: TimetableEntry | null; error: Error | null }> {
     try {
-      const verifiedPeriodId = await safePeriodId(entry.periodId);
-      const verifiedOfferingId = await safeOfferingId(entry.courseOfferingId);
-      const verifiedGroupId = await safeGroupId(entry.courseGroupId);
-      const verifiedFacultyId = await safeFacultyId(entry.facultyId);
+      let verifiedPeriodId = await safePeriodId(entry.periodId);
+      let verifiedOfferingId = await safeOfferingId(entry.courseOfferingId);
+      let verifiedGroupId = await safeGroupId(entry.courseGroupId);
+      let verifiedFacultyId = await safeFacultyId(entry.facultyId);
 
       if (!verifiedOfferingId || !verifiedPeriodId) {
-        console.warn('Skipping remote timetable entry insert: offering or period not in database yet.');
-        return { data: null, error: null };
+        await refreshIdCache(true);
+        verifiedPeriodId = verifiedPeriodId || (await safePeriodId(entry.periodId));
+        verifiedOfferingId = verifiedOfferingId || (await safeOfferingId(entry.courseOfferingId));
+        verifiedGroupId = verifiedGroupId || (await safeGroupId(entry.courseGroupId));
+        verifiedFacultyId = verifiedFacultyId || (await safeFacultyId(entry.facultyId));
+      }
+
+      if (!verifiedOfferingId || !verifiedPeriodId) {
+        return {
+          data: null,
+          error: new Error('Timetable offering or period is missing from Supabase. Please refresh and try again.')
+        };
       }
 
       // Find academic_year_id and semester_id from course_offering if available
@@ -138,17 +148,22 @@ export const timetableService = {
   async updatePeriods(periods: TimetablePeriod[]): Promise<{ success: boolean; error: Error | null }> {
     try {
       for (const p of periods) {
-        const payload = {
+        const payload: any = {
           period_number: p.periodNumber,
           start_time: p.startTime,
           end_time: p.endTime,
           name: p.label || `Period ${p.periodNumber}`,
           label: p.label || `Period ${p.periodNumber}`,
+          session: p.session || (p.periodNumber <= 3 ? 'FN' : 'AN'),
           is_break: !!p.isBreak,
           is_active: p.isActive !== undefined ? p.isActive : true
         };
         const validPeriodId = toValidUuid(p.id) || p.id;
-        await supabase.from('timetable_periods').upsert({ id: validPeriodId, ...payload });
+        const { error } = await supabase.from('timetable_periods').upsert({ id: validPeriodId, ...payload });
+        if (error && error.message?.includes("'session' column")) {
+          delete payload.session;
+          await supabase.from('timetable_periods').upsert({ id: validPeriodId, ...payload });
+        }
       }
       return { success: true, error: null };
     } catch (err: any) {

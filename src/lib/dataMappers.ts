@@ -141,13 +141,34 @@ export const mapTimetablePeriodFromDb = (row: any): TimetablePeriod => {
     return `${padH}:${m}`;
   };
 
+  const rawNum =
+    row.period_number !== undefined && row.period_number !== null
+      ? row.period_number
+      : row.periodNumber;
+  const parsedNum = Number(rawNum);
+  const periodNum = Number.isFinite(parsedNum) ? parsedNum : 1;
+  const isBreak =
+    row.is_break !== undefined
+      ? Boolean(row.is_break)
+      : row.isBreak !== undefined
+        ? Boolean(row.isBreak)
+        : periodNum === 0;
+  const rawSession = row.session || row.session_slot || row.sessionSlot;
+  const session: 'FN' | 'AN' =
+    rawSession === 'FN' || rawSession === 'AN'
+      ? rawSession
+      : periodNum >= 4
+        ? 'AN'
+        : 'FN';
+
   return {
     id: String(row.id),
-    periodNumber: Number(row.period_number || row.periodNumber) || 1,
+    periodNumber: periodNum,
     startTime: formatTime(row.start_time || row.startTime || ''),
     endTime: formatTime(row.end_time || row.endTime || ''),
-    label: row.name || row.label || `Period ${row.period_number || 1}`,
-    isBreak: row.is_break !== undefined ? row.is_break : !!row.isBreak,
+    label: row.name || row.label || (isBreak ? 'Lunch Break' : `Period ${periodNum}`),
+    session,
+    isBreak,
     isActive: row.is_active !== undefined ? row.is_active : true
   };
 };
@@ -189,7 +210,7 @@ export const mapTimetableEntryFromDb = (row: any): TimetableEntry => {
 
 export const mapClassSessionFromDb = (row: any): ClassSession => ({
   id: row.id,
-  date: row.date || '',
+  date: row.date || row.session_date || row.sessionDate || '',
   periodId: row.period_id || row.periodId || '',
   courseOfferingId: row.course_offering_id || row.courseOfferingId || '',
   courseGroupId: row.course_group_id || row.courseGroupId || '',
@@ -234,14 +255,18 @@ export const mapCorrectionRequestFromDb = (row: any): AttendanceCorrectionReques
   requestGroupId: row.request_group_id || row.requestGroupId || undefined
 });
 
-export const mapDepartmentFromDb = (row: any): Department => ({
-  id: row.id,
-  name: row.name || '',
-  code: row.code || '',
-  type: row.type || 'ACADEMIC',
-  hodFacultyId: row.hod_faculty_id || row.hodFacultyId || undefined,
-  isActive: row.is_active !== undefined ? row.is_active : row.isActive !== undefined ? row.isActive : true
-});
+export const mapDepartmentFromDb = (row: any): Department => {
+  const rawPolicy = row.attendance_policy || row.attendancePolicy;
+  return {
+    id: row.id,
+    name: row.name || '',
+    code: row.code || '',
+    type: row.type || 'ACADEMIC',
+    hodFacultyId: row.hod_faculty_id || row.hodFacultyId || undefined,
+    attendancePolicy: rawPolicy === 'SESSION_STRICT' ? 'SESSION_STRICT' : 'HOUR_WISE',
+    isActive: row.is_active !== undefined ? row.is_active : row.isActive !== undefined ? row.isActive : true
+  };
+};
 
 export const mapProgrammeFromDb = (row: any): Programme => ({
   id: row.id,
