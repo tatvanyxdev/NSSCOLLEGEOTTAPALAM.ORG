@@ -22,7 +22,20 @@ const saveCachedAnnouncements = (list: Announcement[]) => {
   }
 };
 
+const clearAnnouncementsCache = () => {
+  try {
+    localStorage.removeItem(LOCAL_ANNOUNCEMENTS_KEY);
+  } catch {
+    // ignore
+  }
+};
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('nss-auth-logout', clearAnnouncementsCache);
+}
+
 export const announcementService = {
+  clearLocalCache: clearAnnouncementsCache,
   async getAnnouncements(): Promise<{ data: Announcement[] | null; error: Error | null }> {
     try {
       // 1. Try Supabase select ordered by created_at
@@ -170,61 +183,32 @@ export const announcementService = {
 
     if (insertSuccess) {
       const mapped = mapAnnouncementFromDb(insertSuccess);
-      // Update local cache
       const cached = getCachedAnnouncements();
       saveCachedAnnouncements([mapped, ...cached.filter(a => a.id !== mapped.id)]);
-      // Also sync to Firebase
       firebaseSyncService.syncAnnouncement(mapped).catch(() => {});
       return { data: mapped, error: null };
     }
 
-    // Resilience Fallback: When Supabase schema is missing tables or columns,
-    // construct a high-fidelity announcement so the user operation succeeds immediately.
-    console.info('Using high-resilience fallback for announcement creation.');
-    const fallbackId = `ann-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-    const fallbackAnnouncement: Announcement = {
-      id: fallbackId,
-      title,
-      content,
-      message: content,
-      category: announcement.category || 'GENERAL',
-      priority,
-      targetAudience: (targetAudience || 'ALL') as AnnouncementAudience,
-      targetRoles: announcement.targetRoles || [targetAudience as any],
-      authorName,
-      publishDate: announcement.publishDate || new Date().toISOString().split('T')[0],
-      publishedAt: announcement.publishedAt || new Date().toISOString(),
-      isPinned: !!announcement.isPinned,
-      createdAt: new Date().toISOString()
+    return {
+      data: null,
+      error: new Error('Unable to publish announcement: database permission denied or network error.')
     };
-
-    // Cache locally & sync to Firebase
-    const cached = getCachedAnnouncements();
-    saveCachedAnnouncements([fallbackAnnouncement, ...cached]);
-    firebaseSyncService.syncAnnouncement(fallbackAnnouncement).catch(() => {});
-
-    return { data: fallbackAnnouncement, error: null };
   },
 
   async deleteAnnouncement(id: string): Promise<{ success: boolean; error: Error | null }> {
     try {
-      // 1. Try Supabase delete
-      await supabase.from('announcements').delete().eq('id', id);
+      const { error } = await supabase.from('announcements').delete().eq('id', id);
+      if (error) {
+        return { success: false, error: new Error(error.message) };
+      }
 
-      // 2. Remove from local cache
       const cached = getCachedAnnouncements();
       saveCachedAnnouncements(cached.filter(a => a.id !== id));
-
-      // 3. Delete from Firebase
       firebaseSyncService.deleteAnnouncement(id).catch(() => {});
 
       return { success: true, error: null };
     } catch (err: any) {
-      console.warn('announcementService.deleteAnnouncement fallback:', err?.message || err);
-      // Remove from local cache anyway
-      const cached = getCachedAnnouncements();
-      saveCachedAnnouncements(cached.filter(a => a.id !== id));
-      return { success: true, error: null };
+      return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
     }
   }
 };

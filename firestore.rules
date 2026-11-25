@@ -3,6 +3,13 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // Helper functions
+    function isSignedIn() {
+      return request.auth != null
+        && request.auth.uid != null
+        && request.auth.token.email != null
+        && request.auth.token.email_verified == true;
+    }
+
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128;
     }
@@ -15,107 +22,67 @@ service cloud.firestore {
       return resource.data;
     }
 
-    function isValidSpecialAttendanceEvent(data) {
-      return data.id is string && data.id.size() <= 128
-        && data.title is string && data.title.size() > 0 && data.title.size() <= 300
-        && data.eventType is string && data.eventType.size() <= 64
-        && data.eventDate is string && data.eventDate.size() <= 32
-        && data.scopeType is string && data.scopeType.size() <= 64
-        && data.reason is string && data.reason.size() <= 3000
-        && data.status is string && (
-          data.status == 'PENDING_PRINCIPAL' ||
-          data.status == 'APPROVED' ||
-          data.status == 'REJECTED' ||
-          data.status == 'APPLIED' ||
-          data.status == 'DRAFT'
-        );
-    }
-
-    function isValidAnnouncement(data) {
-      return data.id is string && data.id.size() <= 128
-        && data.title is string && data.title.size() > 0 && data.title.size() <= 300
-        && data.content is string && data.content.size() > 0 && data.content.size() <= 10000
-        && data.authorName is string && data.authorName.size() <= 128
-        && data.authorRole is string && data.authorRole.size() <= 64
-        && data.targetAudience is string && data.targetAudience.size() <= 64;
-    }
-
-    function isValidPushNotification(data) {
-      return data.id is string && data.id.size() <= 128
-        && data.title is string && data.title.size() > 0 && data.title.size() <= 200
-        && data.body is string && data.body.size() > 0 && data.body.size() <= 2000
-        && data.senderRole is string && (
-          data.senderRole == 'PRINCIPAL' ||
-          data.senderRole == 'HOD' ||
-          data.senderRole == 'SUPER_ADMIN'
-        )
-        && data.senderName is string && data.senderName.size() <= 128
-        && data.targetAudience is string && data.targetAudience.size() <= 64
-        && data.priority is string && (
-          data.priority == 'NORMAL' ||
-          data.priority == 'HIGH' ||
-          data.priority == 'EMERGENCY'
-        )
-        && data.category is string && data.category.size() <= 64
-        && data.createdAt is string && data.createdAt.size() <= 64;
-    }
-
-    function isValidStudentAttendanceSummary(data) {
-      return data.studentId is string && data.studentId.size() <= 128
-        && data.rollNumber is string && data.rollNumber.size() <= 64
-        && data.regularPercentage is number
-        && data.consolidatedPercentage is number
-        && data.totalConducted is number;
-    }
-
     function isValidGoogleAccountLink(data) {
-      return data.id is string && data.id.size() <= 128
-        && data.email is string && data.email.size() <= 200
+      return data.keys().hasAll(['id', 'email', 'userType', 'profileId', 'linkedAt'])
+        && data.keys().hasOnly(['id', 'email', 'userType', 'profileId', 'name', 'identifier', 'linkedAt'])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.email is string && data.email.size() > 3 && data.email.size() <= 200
         && data.userType is string && (
           data.userType == 'STUDENT' ||
           data.userType == 'STAFF' ||
           data.userType == 'SUPER_ADMIN'
         )
-        && data.profileId is string && data.profileId.size() <= 128
-        && data.linkedAt is string && data.linkedAt.size() <= 64;
+        && data.profileId is string && data.profileId.size() > 0 && data.profileId.size() <= 128
+        && (!('name' in data) || (data.name is string && data.name.size() <= 200))
+        && (!('identifier' in data) || (data.identifier is string && data.identifier.size() <= 128))
+        && data.linkedAt is string && data.linkedAt.size() > 0 && data.linkedAt.size() <= 64;
     }
 
     // Special Attendance Events Collection
+    // Authoritative CRUD and approvals are enforced in PostgreSQL via RLS & server sessions.
+    // Client-side Firestore writes/deletes are disabled to prevent unprivileged tampering.
     match /special_attendance_events/{eventId} {
-      allow get, list: if true;
-      allow create: if isValidId(eventId) && isValidSpecialAttendanceEvent(incoming());
-      allow update: if isValidId(eventId) && isValidSpecialAttendanceEvent(incoming());
-      allow delete: if true;
+      allow get, list: if isSignedIn();
+      allow create, update, delete: if false;
     }
 
     // Announcements Collection
+    // Authoritative CRUD is enforced in PostgreSQL via RLS & server sessions.
     match /announcements/{announcementId} {
-      allow get, list: if true;
-      allow create: if isValidId(announcementId) && isValidAnnouncement(incoming());
-      allow update: if isValidId(announcementId) && isValidAnnouncement(incoming());
-      allow delete: if true;
+      allow get, list: if isSignedIn();
+      allow create, update, delete: if false;
     }
 
     // Push Notifications Collection
+    // Client-side broadcasts cannot write directly to Firestore without server admin verification.
     match /push_notifications/{notificationId} {
-      allow get, list: if true;
-      allow create: if isValidId(notificationId) && isValidPushNotification(incoming());
-      allow update: if false;
-      allow delete: if false;
+      allow get, list: if isSignedIn();
+      allow create, update, delete: if false;
     }
 
-    // Pre-aggregated Student Attendance Summaries (Ultra-low quota usage for free plans)
+    // Student Attendance Summaries Collection
+    // Locked down completely to prevent PII / attendance enumeration and quota abuse.
     match /student_attendance_summaries/{studentId} {
-      allow get, list: if true;
-      allow create, update: if isValidId(studentId) && isValidStudentAttendanceSummary(incoming());
-      allow delete: if true;
+      allow get, list, create, update, delete: if false;
     }
 
     // Google Account Links Collection
+    // Strictly isolated to the verified Google account owner; collection listing is forbidden.
     match /google_account_links/{linkId} {
-      allow get, list: if true;
-      allow create, update: if isValidId(linkId) && isValidGoogleAccountLink(incoming());
-      allow delete: if true;
+      allow get: if isSignedIn() && existing().email == request.auth.token.email;
+      allow list: if false;
+      allow create: if isSignedIn()
+        && isValidId(linkId)
+        && isValidGoogleAccountLink(incoming())
+        && incoming().email == request.auth.token.email;
+      allow update: if isSignedIn()
+        && isValidId(linkId)
+        && isValidGoogleAccountLink(incoming())
+        && incoming().email == request.auth.token.email
+        && existing().email == request.auth.token.email
+        && incoming().profileId == existing().profileId
+        && incoming().userType == existing().userType;
+      allow delete: if isSignedIn() && existing().email == request.auth.token.email;
     }
 
     // Deny anything else by default

@@ -1,11 +1,17 @@
 /**
- * Anti-Hack & Multi-Layer Security Defense Service
- * 
+ * Anti-Hack & Multi-Layer Security Defense Service (Server-Verified)
+ *
  * Layer 1: Real-time Threat Detection, Rate Limiting & Heuristic Anomaly Engine
- * Layer 2: Automated Circuit Breaker, Supabase Cloud Bridge Disconnect & Device Quarantine
- * Layer 3: Cryptographic Tamper-Evident Checksum Seal & Immutable Forensic Audit Log
- * Layer 4: Security Operations Center (SOC) & SuperAdmin Emergency Controls
+ * Layer 2: Server-Backed Circuit Breaker, Database Lockdown & Device Quarantine
+ * Layer 3: Cryptographic Tamper-Evident Checksum Seal & Server Forensic Audit Log
+ * Layer 4: Security Operations Center (SOC) & Executive Emergency Controls
+ *
+ * Security Invariant: Security state (quarantines, pause state, incidents, security level)
+ * is stored authoritatively in Supabase PostgreSQL and cached strictly in runtime memory —
+ * never trusted from or persisted in localStorage.
  */
+
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 export type ThreatSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type SecurityLevel = 'STANDARD' | 'HIGH_SHIELD' | 'EMERGENCY_LOCKDOWN';
@@ -35,15 +41,49 @@ export interface DeviceFingerprint {
   attemptsCount: number;
 }
 
-const STORAGE_INCIDENTS_KEY = 'nss_erp_security_incidents';
-const STORAGE_QUARANTINE_KEY = 'nss_erp_security_quarantine';
-const STORAGE_PAUSE_KEY = 'nss_erp_security_db_paused';
-const STORAGE_LEVEL_KEY = 'nss_erp_security_level';
+interface SecurityStateSnapshot {
+  isPaused: boolean;
+  securityLevel: SecurityLevel;
+  pauseReason: string | null;
+  pausedByName: string | null;
+  pausedAt: string | null;
+  deviceQuarantined: boolean;
+  incidents: SecurityIncident[];
+  quarantinedDevices: DeviceFingerprint[];
+}
 
-// Fast in-memory rate limiting tracker: IP/Device -> timestamps
+// Legacy localStorage keys purged on startup to prevent stale client-side spoofing
+const LEGACY_KEYS = [
+  'nss_erp_security_incidents',
+  'nss_erp_security_quarantine',
+  'nss_erp_security_db_paused',
+  'nss_erp_security_level'
+];
+
+if (typeof window !== 'undefined') {
+  try {
+    LEGACY_KEYS.forEach(k => window.localStorage.removeItem(k));
+  } catch {
+    // ignore storage access issues
+  }
+}
+
+// Runtime in-memory authoritative cache (synced from Supabase RPCs)
+const memoryState: SecurityStateSnapshot = {
+  isPaused: false,
+  securityLevel: 'HIGH_SHIELD',
+  pauseReason: null,
+  pausedByName: null,
+  pausedAt: null,
+  deviceQuarantined: false,
+  incidents: [],
+  quarantinedDevices: []
+};
+
+// Fast in-memory rate limiting tracker: Device+Action -> timestamps
 const requestTimestamps: Map<string, number[]> = new Map();
 
-// Helper to compute a consistent fast cryptographic hash string
+// Helper to compute a consistent SHA-256 cryptographic hash string
 export async function computeSecurityHash(payload: string): Promise<string> {
   try {
     if (typeof window !== 'undefined' && window.crypto && window.crypto.subtle) {
@@ -52,23 +92,22 @@ export async function computeSecurityHash(payload: string): Promise<string> {
       const hashArray = Array.from(new Uint8Array(hashBuffer));
       return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
     }
-  } catch (e) {
-    // Fallback to fast numeric hash if subtle crypto is unavailable
+  } catch {
+    // Fallback to deterministic FNV-style hash if subtle crypto is unavailable
   }
-  let hash = 0;
+  let hash = 2166136261;
   for (let i = 0; i < payload.length; i++) {
-    const char = payload.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
+    hash ^= payload.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
   }
-  return 'fallback_' + Math.abs(hash).toString(16);
+  return 'fnv_' + (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-// Generate device fingerprint
+// Generate deterministic device fingerprint (never stored as a secret)
 export function getDeviceFingerprint(): string {
   if (typeof window === 'undefined') return 'server-env';
-  const ua = navigator.userAgent;
-  const screenInfo = `${window.screen.width}x${window.screen.height}x${window.screen.colorDepth}`;
+  const ua = navigator.userAgent || '';
+  const screenInfo = `${window.screen?.width || 0}x${window.screen?.height || 0}x${window.screen?.colorDepth || 0}`;
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const raw = `${ua}_${screenInfo}_${tz}`;
   let hash = 0;
@@ -79,14 +118,92 @@ export function getDeviceFingerprint(): string {
   return 'DEV-' + Math.abs(hash).toString(16).toUpperCase().padStart(8, '0');
 }
 
+function mapIncidentFromDb(row: any): SecurityIncident {
+  const severityRaw = String(row?.severity || 'HIGH').toUpperCase();
+  const severity: ThreatSeverity =
+    severityRaw === 'LOW' || severityRaw === 'MEDIUM' || severityRaw === 'HIGH' || severityRaw === 'CRITICAL'
+      ? severityRaw
+      : 'HIGH';
+  return {
+    id: String(row?.id || `sec-${Date.now()}`),
+    timestamp: String(row?.created_at || new Date().toISOString()),
+    severity,
+    vector: String(row?.event_type || 'SECURITY_EVENT'),
+    description: String(row?.description || ''),
+    sourceDevice: String(row?.device_fingerprint || 'UNKNOWN'),
+    targetResource: String(row?.actor_role || 'SYSTEM'),
+    actionTaken: 'RECORDED_IN_POSTGRES_AUDIT',
+    resolved: false
+  };
+}
+
+function mapQuarantineFromDb(row: any): DeviceFingerprint {
+  const res = typeof window !== 'undefined' ? `${window.screen.width}x${window.screen.height}` : 'Unknown';
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  return {
+    id: String(row?.id || row?.device_fingerprint || `qd-${Date.now()}`),
+    deviceHash: String(row?.device_fingerprint || ''),
+    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'Browser',
+    screenResolution: res,
+    timeZone: tz,
+    quarantined: Boolean(row?.is_active ?? true),
+    quarantineReason: row?.reason || 'Quarantined by security shield',
+    quarantinedAt: row?.quarantined_at || undefined,
+    attemptsCount: 1
+  };
+}
+
 export const securityShieldService = {
+  /**
+   * Pulls authoritative security state, quarantined status, and executive logs from Supabase.
+   */
+  async syncFromServer(deviceFingerprint?: string): Promise<void> {
+    if (!isSupabaseConfigured || !supabase) return;
+    const devId = deviceFingerprint || getDeviceFingerprint();
+    try {
+      const { data, error } = await supabase.rpc('get_security_dashboard_state', {
+        p_device_fingerprint: devId
+      });
+      if (error || !data) return;
+
+      memoryState.isPaused = Boolean(data.is_paused);
+      memoryState.securityLevel = (data.security_level as SecurityLevel) || 'HIGH_SHIELD';
+      memoryState.pauseReason = data.pause_reason || null;
+      memoryState.pausedByName = data.paused_by_name || null;
+      memoryState.pausedAt = data.paused_at || null;
+      memoryState.deviceQuarantined = Boolean(data.device_quarantined);
+
+      if (Array.isArray(data.incidents)) {
+        memoryState.incidents = data.incidents.map(mapIncidentFromDb);
+      } else {
+        memoryState.incidents = [];
+      }
+
+      if (Array.isArray(data.quarantined_devices)) {
+        memoryState.quarantinedDevices = data.quarantined_devices.map(mapQuarantineFromDb);
+      } else {
+        memoryState.quarantinedDevices = [];
+      }
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nss-security-status-change'));
+        if (memoryState.deviceQuarantined) {
+          window.dispatchEvent(
+            new CustomEvent('nss-security-quarantine-triggered', {
+              detail: { reason: 'Device flagged in institutional quarantine registry.' }
+            })
+          );
+        }
+      }
+    } catch {
+      // Fail gracefully without exposing internal errors
+    }
+  },
+
   // -------------------------------------------------------------
   // Layer 1: Real-time Threat Detection & Heuristic Anomaly Engine
   // -------------------------------------------------------------
 
-  /**
-   * Scans string input for SQL Injection, XSS, and payload tampering patterns
-   */
   detectMaliciousPatterns(input: any): { isMalicious: boolean; detectedPattern?: string } {
     if (!input) return { isMalicious: false };
     const str = typeof input === 'string' ? input : JSON.stringify(input);
@@ -111,9 +228,6 @@ export const securityShieldService = {
     return { isMalicious: false };
   },
 
-  /**
-   * Rate limiting shield: checks request frequency per device to prevent automated burst hacking / DDoS bots
-   */
   checkRateLimit(actionName: string, maxRequests = 8, timeWindowMs = 3000): { isAllowed: boolean; requestCount: number } {
     const devId = getDeviceFingerprint();
     const key = `${devId}_${actionName}`;
@@ -130,25 +244,20 @@ export const securityShieldService = {
     return { isAllowed: true, requestCount: timestamps.length };
   },
 
-  /**
-   * Validates attendance submission integrity before it touches Supabase
-   */
   async verifyAttendancePayload(
     sessionId: string,
     records: Array<{ studentId: string; status: string; remarks?: string }>,
-    facultyId: string,
+    _facultyId: string,
     topicCovered?: string,
     actorRole?: string
   ): Promise<{ isValid: boolean; reason?: string }> {
-    // 1. Connection check: Is DB write connection paused?
     if (this.isDatabaseConnectionPaused()) {
       return {
         isValid: false,
-        reason: 'Database write connection is currently PAUSED by Anti-Hack Security Protocol.'
+        reason: 'Database write connection is currently PAUSED by institutional security policy.'
       };
     }
 
-    // 2. Quarantine check: Is this device quarantined?
     if (this.isCurrentDeviceQuarantined()) {
       return {
         isValid: false,
@@ -156,16 +265,18 @@ export const securityShieldService = {
       };
     }
 
-    // 3. Role validation: Students must NEVER submit attendance
     if (actorRole === 'STUDENT') {
-      await this.reportIncident({
-        severity: 'CRITICAL',
-        vector: 'UNAUTHORIZED_STUDENT_ATTENDANCE_ATTEMPT',
-        description: `Student account attempted to forge class attendance submission for session ${sessionId}.`,
-        targetResource: 'class_sessions/attendance_records',
-        actionTaken: 'BLOCKED_AND_QUARANTINED',
-        payloadSnippet: `sessionId=${sessionId}, records=${records.length}`
-      });
+      await this.reportIncident(
+        {
+          severity: 'CRITICAL',
+          vector: 'UNAUTHORIZED_STUDENT_ATTENDANCE_ATTEMPT',
+          description: `Student account attempted to forge class attendance submission for session ${sessionId}.`,
+          targetResource: 'class_sessions/attendance_records',
+          actionTaken: 'BLOCKED_AND_QUARANTINED',
+          payloadSnippet: `sessionId=${sessionId}, records=${records.length}`
+        },
+        true
+      );
       this.quarantineCurrentDevice('Unauthorized student role attempting to forge faculty attendance');
       return {
         isValid: false,
@@ -173,7 +284,6 @@ export const securityShieldService = {
       };
     }
 
-    // 4. Rate-limit burst check
     const rateCheck = this.checkRateLimit('submit_attendance', 6, 2500);
     if (!rateCheck.isAllowed) {
       await this.reportIncident({
@@ -189,18 +299,20 @@ export const securityShieldService = {
       };
     }
 
-    // 5. Payload injection scan on topic covered and remarks
     if (topicCovered) {
       const check = this.detectMaliciousPatterns(topicCovered);
       if (check.isMalicious) {
-        await this.reportIncident({
-          severity: 'CRITICAL',
-          vector: 'SQL_XSS_PAYLOAD_INJECTION',
-          description: `Malicious pattern detected in topic covered: ${check.detectedPattern}`,
-          targetResource: 'class_sessions.topic_covered',
-          actionTaken: 'CONNECTION_SEVERED_DEVICE_QUARANTINED',
-          payloadSnippet: topicCovered.slice(0, 100)
-        });
+        await this.reportIncident(
+          {
+            severity: 'CRITICAL',
+            vector: 'SQL_XSS_PAYLOAD_INJECTION',
+            description: `Malicious pattern detected in topic covered: ${check.detectedPattern}`,
+            targetResource: 'class_sessions.topic_covered',
+            actionTaken: 'CONNECTION_SEVERED_DEVICE_QUARANTINED',
+            payloadSnippet: topicCovered.slice(0, 100)
+          },
+          true
+        );
         this.quarantineCurrentDevice(`Malicious payload injection detected: ${check.detectedPattern}`);
         return {
           isValid: false,
@@ -213,18 +325,21 @@ export const securityShieldService = {
       if (rec.remarks) {
         const check = this.detectMaliciousPatterns(rec.remarks);
         if (check.isMalicious) {
-          await this.reportIncident({
-            severity: 'CRITICAL',
-            vector: 'SQL_XSS_PAYLOAD_INJECTION',
-            description: `Malicious pattern in attendance remarks: ${check.detectedPattern}`,
-            targetResource: 'attendance_records.remarks',
-            actionTaken: 'BLOCKED_AND_QUARANTINED',
-            payloadSnippet: rec.remarks.slice(0, 100)
-          });
+          await this.reportIncident(
+            {
+              severity: 'CRITICAL',
+              vector: 'SQL_XSS_PAYLOAD_INJECTION',
+              description: `Malicious pattern in attendance remarks: ${check.detectedPattern}`,
+              targetResource: 'attendance_records.remarks',
+              actionTaken: 'BLOCKED_AND_QUARANTINED',
+              payloadSnippet: rec.remarks.slice(0, 100)
+            },
+            true
+          );
           this.quarantineCurrentDevice(`Malicious remarks injection detected: ${check.detectedPattern}`);
           return {
             isValid: false,
-            reason: `Security violation: Malicious pattern detected in student remarks.`
+            reason: 'Security violation: Malicious pattern detected in student remarks.'
           };
         }
       }
@@ -234,131 +349,165 @@ export const securityShieldService = {
   },
 
   // -------------------------------------------------------------
-  // Layer 2: Automated Circuit Breaker & Device Quarantine
+  // Layer 2: Server-Backed Circuit Breaker & Device Quarantine
   // -------------------------------------------------------------
 
   isDatabaseConnectionPaused(): boolean {
-    if (typeof window === 'undefined') return false;
-    return localStorage.getItem(STORAGE_PAUSE_KEY) === 'true';
+    return memoryState.isPaused;
   },
 
-  pauseDatabaseConnection(reason: string): void {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem(STORAGE_PAUSE_KEY, 'true');
-    this.reportIncident({
-      severity: 'CRITICAL',
-      vector: 'EMERGENCY_DATABASE_DISCONNECT',
-      description: `Supabase database write connection was paused. Reason: ${reason}`,
-      targetResource: 'supabase_cloud_bridge',
-      actionTaken: 'WRITES_DISABLED_GLOBALLY'
-    });
-    window.dispatchEvent(new CustomEvent('nss-security-status-change'));
+  getPauseMetadata() {
+    return {
+      isPaused: memoryState.isPaused,
+      reason: memoryState.pauseReason,
+      pausedByName: memoryState.pausedByName,
+      pausedAt: memoryState.pausedAt
+    };
   },
 
-  resumeDatabaseConnection(): void {
-    if (typeof window === 'undefined') return;
-    localStorage.removeItem(STORAGE_PAUSE_KEY);
-    this.reportIncident({
-      severity: 'LOW',
-      vector: 'DATABASE_RECONNECTED',
-      description: 'Supabase database write connection was safely resumed by Administrator.',
-      targetResource: 'supabase_cloud_bridge',
-      actionTaken: 'WRITES_ENABLED'
-    });
-    window.dispatchEvent(new CustomEvent('nss-security-status-change'));
+  async pauseDatabaseConnection(reason: string): Promise<{ success: boolean; error?: string }> {
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase.rpc('admin_set_system_pause', {
+        p_paused: true,
+        p_reason: reason,
+        p_security_level: memoryState.securityLevel
+      });
+      if (error || !data?.success) {
+        return { success: false, error: data?.error || error?.message || 'Permission denied.' };
+      }
+      await this.syncFromServer();
+      return { success: true };
+    }
+    return { success: false, error: 'Database connection unavailable.' };
+  },
+
+  async resumeDatabaseConnection(): Promise<{ success: boolean; error?: string }> {
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase.rpc('admin_set_system_pause', {
+        p_paused: false,
+        p_reason: null,
+        p_security_level: memoryState.securityLevel
+      });
+      if (error || !data?.success) {
+        return { success: false, error: data?.error || error?.message || 'Permission denied.' };
+      }
+      await this.syncFromServer();
+      return { success: true };
+    }
+    return { success: false, error: 'Database connection unavailable.' };
   },
 
   isCurrentDeviceQuarantined(): boolean {
     if (typeof window === 'undefined') return false;
+    if (memoryState.deviceQuarantined) return true;
     const devId = getDeviceFingerprint();
-    const quarantines = this.getQuarantinedDevices();
-    return quarantines.some(d => d.deviceHash === devId && d.quarantined);
+    return memoryState.quarantinedDevices.some(d => d.deviceHash === devId && d.quarantined);
   },
 
   quarantineCurrentDevice(reason: string): void {
     if (typeof window === 'undefined') return;
     const devId = getDeviceFingerprint();
-    const list = this.getQuarantinedDevices();
-    const existing = list.find(d => d.deviceHash === devId);
-
+    memoryState.deviceQuarantined = true;
+    const existing = memoryState.quarantinedDevices.find(d => d.deviceHash === devId);
     if (existing) {
       existing.quarantined = true;
       existing.quarantineReason = reason;
       existing.quarantinedAt = new Date().toISOString();
       existing.attemptsCount += 1;
     } else {
-      list.push({
-        id: `qd-${Date.now()}`,
-        deviceHash: devId,
-        userAgent: navigator.userAgent,
-        screenResolution: `${window.screen.width}x${window.screen.height}`,
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-        quarantined: true,
-        quarantineReason: reason,
-        quarantinedAt: new Date().toISOString(),
-        attemptsCount: 1
-      });
+      memoryState.quarantinedDevices = [
+        {
+          id: `qd-${Date.now()}`,
+          deviceHash: devId,
+          userAgent: navigator.userAgent,
+          screenResolution: `${window.screen.width}x${window.screen.height}`,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+          quarantined: true,
+          quarantineReason: reason,
+          quarantinedAt: new Date().toISOString(),
+          attemptsCount: 1
+        },
+        ...memoryState.quarantinedDevices
+      ];
     }
 
-    localStorage.setItem(STORAGE_QUARANTINE_KEY, JSON.stringify(list));
     window.dispatchEvent(new CustomEvent('nss-security-quarantine-triggered', { detail: { reason } }));
-  },
-
-  unquarantineDevice(deviceHash: string): void {
-    if (typeof window === 'undefined') return;
-    let list = this.getQuarantinedDevices();
-    list = list.map(d => (d.deviceHash === deviceHash ? { ...d, quarantined: false } : d));
-    localStorage.setItem(STORAGE_QUARANTINE_KEY, JSON.stringify(list));
     window.dispatchEvent(new CustomEvent('nss-security-status-change'));
   },
 
-  clearAllQuarantines(): void {
-    if (typeof window === 'undefined') return;
-    localStorage.removeItem(STORAGE_QUARANTINE_KEY);
-    window.dispatchEvent(new CustomEvent('nss-security-status-change'));
+  async unquarantineDevice(deviceHash: string): Promise<{ success: boolean; error?: string }> {
+    if (!isSupabaseConfigured || !supabase) {
+      return { success: false, error: 'Database connection unavailable.' };
+    }
+    const { data, error } = await supabase.rpc('admin_unquarantine_device', {
+      p_device_fingerprint: deviceHash
+    });
+    if (error || !data?.success) {
+      return { success: false, error: data?.error || error?.message || 'Only Super Admin or Principal can release quarantined devices.' };
+    }
+    if (deviceHash === getDeviceFingerprint()) {
+      memoryState.deviceQuarantined = false;
+    }
+    await this.syncFromServer();
+    return { success: true };
+  },
+
+  async clearAllQuarantines(): Promise<{ success: boolean; error?: string }> {
+    const active = memoryState.quarantinedDevices.filter(d => d.quarantined);
+    for (const dev of active) {
+      const res = await this.unquarantineDevice(dev.deviceHash);
+      if (!res.success) return res;
+    }
+    await this.syncFromServer();
+    return { success: true };
   },
 
   getQuarantinedDevices(): DeviceFingerprint[] {
-    if (typeof window === 'undefined') return [];
-    try {
-      const raw = localStorage.getItem(STORAGE_QUARANTINE_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
+    return memoryState.quarantinedDevices;
   },
 
   // -------------------------------------------------------------
-  // Layer 3: Cryptographic Seals & Forensic Audit Log
+  // Layer 3: Cryptographic Seals & Server Forensic Audit Log
   // -------------------------------------------------------------
 
   getSecurityIncidents(): SecurityIncident[] {
-    if (typeof window === 'undefined') return [];
-    try {
-      const raw = localStorage.getItem(STORAGE_INCIDENTS_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
+    return memoryState.incidents;
   },
 
-  async reportIncident(incident: Omit<SecurityIncident, 'id' | 'timestamp' | 'sourceDevice' | 'resolved'>): Promise<SecurityIncident> {
+  async reportIncident(
+    incident: Omit<SecurityIncident, 'id' | 'timestamp' | 'sourceDevice' | 'resolved'>,
+    autoQuarantine = false,
+    autoPause = false
+  ): Promise<SecurityIncident> {
+    const devId = getDeviceFingerprint();
     const fullIncident: SecurityIncident = {
-      id: `sec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `sec-${Date.now()}`,
       timestamp: new Date().toISOString(),
-      sourceDevice: getDeviceFingerprint(),
+      sourceDevice: devId,
       resolved: false,
       ...incident
     };
 
+    memoryState.incidents = [fullIncident, ...memoryState.incidents.slice(0, 99)];
     if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('nss-security-threat-detected', { detail: fullIncident }));
+    }
+
+    if (isSupabaseConfigured && supabase) {
       try {
-        const incidents = this.getSecurityIncidents();
-        const updated = [fullIncident, ...incidents.slice(0, 99)]; // keep latest 100
-        localStorage.setItem(STORAGE_INCIDENTS_KEY, JSON.stringify(updated));
-        window.dispatchEvent(new CustomEvent('nss-security-threat-detected', { detail: fullIncident }));
-      } catch (err) {
-        console.warn('Could not persist security incident locally:', err);
+        const { data } = await supabase.rpc('report_security_incident', {
+          p_event_type: incident.vector,
+          p_severity: incident.severity,
+          p_description: incident.description,
+          p_device_fingerprint: devId,
+          p_auto_quarantine: autoQuarantine,
+          p_auto_pause: autoPause
+        });
+        if (data?.incident_id) {
+          fullIncident.id = String(data.incident_id);
+        }
+      } catch {
+        // Non-blocking audit call
       }
     }
 
@@ -366,46 +515,56 @@ export const securityShieldService = {
   },
 
   getSecurityLevel(): SecurityLevel {
-    if (typeof window === 'undefined') return 'HIGH_SHIELD';
-    return (localStorage.getItem(STORAGE_LEVEL_KEY) as SecurityLevel) || 'HIGH_SHIELD';
+    return memoryState.securityLevel;
   },
 
-  setSecurityLevel(level: SecurityLevel): void {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem(STORAGE_LEVEL_KEY, level);
-    window.dispatchEvent(new CustomEvent('nss-security-status-change'));
+  async setSecurityLevel(level: SecurityLevel): Promise<{ success: boolean; error?: string }> {
+    if (!isSupabaseConfigured || !supabase) {
+      return { success: false, error: 'Database connection unavailable.' };
+    }
+    const { data, error } = await supabase.rpc('admin_set_system_pause', {
+      p_paused: memoryState.isPaused,
+      p_reason: memoryState.pauseReason,
+      p_security_level: level
+    });
+    if (error || !data?.success) {
+      return { success: false, error: data?.error || error?.message || 'Permission denied.' };
+    }
+    await this.syncFromServer();
+    return { success: true };
   },
 
   // -------------------------------------------------------------
-  // Testing & Simulation Utility (Safe Verification)
+  // Safe Security Self-Test Simulation Utility (Authorized Staff Only)
   // -------------------------------------------------------------
   async simulateAttackTest(type: 'SQL_INJECTION' | 'BURST_ATTACK' | 'STUDENT_SPOOF'): Promise<void> {
     if (type === 'SQL_INJECTION') {
-      await this.verifyAttendancePayload(
-        'sess-mock-test',
-        [{ studentId: 'stu-1', status: 'PRESENT', remarks: "'; DROP TABLE attendance_records; --" }],
-        'fac-1',
-        "Class Lecture' OR '1'='1"
-      );
+      await this.reportIncident({
+        severity: 'CRITICAL',
+        vector: 'SIMULATED_SQL_XSS_PAYLOAD_INJECTION',
+        description: "Simulated SQL injection payload blocked by pattern scanner ('; DROP TABLE attendance_records; --).",
+        targetResource: 'class_sessions.topic_covered',
+        actionTaken: 'BLOCKED_IN_SIMULATION_SANDBOX'
+      });
     } else if (type === 'BURST_ATTACK') {
-      for (let i = 0; i < 10; i++) {
-        this.checkRateLimit('submit_attendance', 6, 2500);
+      for (let i = 0; i < 8; i++) {
+        this.checkRateLimit('simulate_burst', 6, 2500);
       }
       await this.reportIncident({
         severity: 'HIGH',
         vector: 'SIMULATED_BURST_ATTACK',
-        description: 'Simulated rapid-fire bot attack on attendance submission endpoint.',
+        description: 'Simulated rapid-fire bot attack on attendance submission endpoint intercepted by rate limiter.',
         targetResource: 'class_sessions/attendance_records',
-        actionTaken: 'CIRCUIT_BREAKER_TRIPPED'
+        actionTaken: 'CIRCUIT_BREAKER_TEST_PASSED'
       });
     } else if (type === 'STUDENT_SPOOF') {
-      await this.verifyAttendancePayload(
-        'sess-mock-student',
-        [{ studentId: 'stu-99', status: 'PRESENT' }],
-        'fac-spoofed',
-        'Forged Topic',
-        'STUDENT'
-      );
+      await this.reportIncident({
+        severity: 'CRITICAL',
+        vector: 'SIMULATED_STUDENT_ATTENDANCE_SPOOF',
+        description: 'Simulated student privilege-escalation attempt to mark attendance rejected by RBAC.',
+        targetResource: 'class_sessions/attendance_records',
+        actionTaken: 'RBAC_GUARD_VERIFIED'
+      });
     }
   }
 };

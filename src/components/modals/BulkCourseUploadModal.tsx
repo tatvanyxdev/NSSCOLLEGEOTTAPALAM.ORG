@@ -113,8 +113,12 @@ export const BulkCourseUploadModal: React.FC<BulkCourseUploadModalProps> = ({
     }
   };
 
-  const handleDownloadTemplate = () => {
-    downloadCourseExcelTemplate(departments, categories);
+  const handleDownloadTemplate = async () => {
+    try {
+      await downloadCourseExcelTemplate(departments, categories);
+    } catch (err: any) {
+      setParseError(`Failed to generate template: ${err?.message || 'Unknown error'}`);
+    }
   };
 
   const handleExecuteImport = async () => {

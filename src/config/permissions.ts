@@ -162,6 +162,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Partial<Record<ResourceType, Act
   OFFICE_STAFF: {
     faculty: [],
     students: ['read', 'create', 'update', 'delete', 'export_admin'],
+    courses: ['read_all' as ActionType, 'delete'],
     course_registrations: ['read_all' as ActionType, 'register', 'bulk_register'],
     departments: ['read'],
     programmes: ['read'],
@@ -195,6 +196,7 @@ export const ROLE_ALLOWED_VIEWS: Record<UserRole, string[]> = {
     'course-categories',
     'courses',
     'students',
+    'onboarded-students',
     'staff-enrollment',
     'registrations',
     'faculty',
@@ -215,6 +217,7 @@ export const ROLE_ALLOWED_VIEWS: Record<UserRole, string[]> = {
     'course-categories',
     'courses',
     'students',
+    'onboarded-students',
     'staff-enrollment',
     'registrations',
     'faculty',
@@ -232,6 +235,7 @@ export const ROLE_ALLOWED_VIEWS: Record<UserRole, string[]> = {
     'programmes',
     'courses',
     'students',
+    'onboarded-students',
     'registrations',
     'reports',
     'announcements'
@@ -245,6 +249,7 @@ export const ROLE_ALLOWED_VIEWS: Record<UserRole, string[]> = {
     'courses',
     'registrations',
     'students',
+    'onboarded-students',
     'reports',
     'announcements'
   ],
@@ -257,6 +262,7 @@ export const ROLE_ALLOWED_VIEWS: Record<UserRole, string[]> = {
     'courses',
     'registrations',
     'students',
+    'onboarded-students',
     'reports',
     'announcements'
   ],
@@ -268,6 +274,7 @@ export const ROLE_ALLOWED_VIEWS: Record<UserRole, string[]> = {
     'courses',
     'registrations',
     'students',
+    'onboarded-students',
     'reports',
     'announcements'
   ],
@@ -279,13 +286,16 @@ export const ROLE_ALLOWED_VIEWS: Record<UserRole, string[]> = {
     'special-attendance',
     'timetable',
     'students',
+    'onboarded-students',
     'reports',
     'announcements'
   ],
 
   OFFICE_STAFF: [
     'dashboard',
+    'courses',
     'students',
+    'onboarded-students',
     'registrations',
     'programmes',
     'departments',

@@ -32,8 +32,8 @@ interface SecurityOperationsModalProps {
 }
 
 export const SecurityOperationsModal: React.FC<SecurityOperationsModalProps> = ({ isOpen, onClose }) => {
-  const { activeRole } = useAuth();
-  const isSuperAdmin = activeRole === 'SUPER_ADMIN';
+  const { user, activeRole } = useAuth();
+  const isSuperAdmin = Boolean(user?.roles?.includes('SUPER_ADMIN')) && activeRole !== 'STUDENT';
 
   const [incidents, setIncidents] = useState<SecurityIncident[]>([]);
   const [quarantinedDevices, setQuarantinedDevices] = useState<DeviceFingerprint[]>([]);
@@ -41,6 +41,7 @@ export const SecurityOperationsModal: React.FC<SecurityOperationsModalProps> = (
   const [securityLevel, setSecurityLevel] = useState<SecurityLevel>('HIGH_SHIELD');
   const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'INCIDENTS' | 'QUARANTINE' | 'TEST'>('OVERVIEW');
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const loadData = () => {
     setIncidents(securityShieldService.getSecurityIncidents());
@@ -51,6 +52,8 @@ export const SecurityOperationsModal: React.FC<SecurityOperationsModalProps> = (
 
   useEffect(() => {
     if (isOpen) {
+      setActionError(null);
+      securityShieldService.syncFromServer().then(loadData);
       loadData();
     }
 
@@ -68,23 +71,24 @@ export const SecurityOperationsModal: React.FC<SecurityOperationsModalProps> = (
 
   if (!isOpen) return null;
 
-  const handleToggleDbPause = () => {
+  const handleToggleDbPause = async () => {
     if (!isSuperAdmin) return;
-    if (isDbPaused) {
-      securityShieldService.resumeDatabaseConnection();
-      setIsDbPaused(false);
-    } else {
-      securityShieldService.pauseDatabaseConnection('Emergency manual disconnect by SuperAdmin');
-      setIsDbPaused(true);
+    setActionError(null);
+    const res = isDbPaused
+      ? await securityShieldService.resumeDatabaseConnection()
+      : await securityShieldService.pauseDatabaseConnection('Emergency manual disconnect by SuperAdmin');
+    if (!res.success && res.error) {
+      setActionError(res.error);
     }
     loadData();
   };
 
   const handleRunTest = async (testType: 'SQL_INJECTION' | 'BURST_ATTACK' | 'STUDENT_SPOOF') => {
+    if (!isSuperAdmin) return;
     setTestResult('Running threat simulation test...');
     await securityShieldService.simulateAttackTest(testType);
     loadData();
-    setTestResult(`Threat simulated successfully! The Anti-Hack Shield intercepted and blocked the ${testType} attack.`);
+    setTestResult(`Threat simulated successfully! The Security Shield intercepted and logged the ${testType} test.`);
     setTimeout(() => setTestResult(null), 5000);
   };
 
@@ -165,20 +169,27 @@ export const SecurityOperationsModal: React.FC<SecurityOperationsModalProps> = (
             <Lock className="w-4 h-4" /> Device Quarantine ({quarantinedDevices.filter(d => d.quarantined).length})
           </button>
 
-          <button
-            onClick={() => setActiveTab('TEST')}
-            className={`py-3 border-b-2 transition-colors flex items-center gap-1.5 ${
-              activeTab === 'TEST'
-                ? 'border-emerald-500 text-emerald-400'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Play className="w-4 h-4" /> Self-Test & Simulation
-          </button>
+          {isSuperAdmin && (
+            <button
+              onClick={() => setActiveTab('TEST')}
+              className={`py-3 border-b-2 transition-colors flex items-center gap-1.5 ${
+                activeTab === 'TEST'
+                  ? 'border-emerald-500 text-emerald-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Play className="w-4 h-4" /> Self-Test & Simulation
+            </button>
+          )}
         </div>
 
         {/* Modal Body */}
         <div className="p-6 overflow-y-auto space-y-6 flex-1 text-slate-300">
+          {actionError && (
+            <div className="p-3 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs">
+              {actionError}
+            </div>
+          )}
           {/* TAB 1: OVERVIEW & 4-LAYER DEFENSE */}
           {activeTab === 'OVERVIEW' && (
             <div className="space-y-6">
@@ -343,8 +354,9 @@ export const SecurityOperationsModal: React.FC<SecurityOperationsModalProps> = (
                 <span>Quarantined Devices: <strong className="text-white">{quarantinedDevices.filter(d => d.quarantined).length}</strong></span>
                 {quarantinedDevices.length > 0 && isSuperAdmin && (
                   <button
-                    onClick={() => {
-                      securityShieldService.clearAllQuarantines();
+                    onClick={async () => {
+                      const res = await securityShieldService.clearAllQuarantines();
+                      if (!res.success && res.error) setActionError(res.error);
                       loadData();
                     }}
                     className="text-xs text-rose-400 hover:text-rose-300 font-bold flex items-center gap-1"
@@ -384,8 +396,9 @@ export const SecurityOperationsModal: React.FC<SecurityOperationsModalProps> = (
 
                         {isSuperAdmin && (
                           <button
-                            onClick={() => {
-                              securityShieldService.unquarantineDevice(dev.deviceHash);
+                            onClick={async () => {
+                              const res = await securityShieldService.unquarantineDevice(dev.deviceHash);
+                              if (!res.success && res.error) setActionError(res.error);
                               loadData();
                             }}
                             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1"

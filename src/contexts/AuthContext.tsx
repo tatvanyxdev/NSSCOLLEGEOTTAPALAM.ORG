@@ -1,26 +1,35 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import { Clock, X } from 'lucide-react';
 import { UserRole, Faculty, Student } from '../types';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase, isSupabaseConfigured, setInMemoryErpSessionToken } from '../lib/supabase';
 import { GoogleAuthProvider, signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
 import { auth as firebaseAuth } from '../lib/firebase';
-import { firebaseSyncService } from '../services/firebaseSyncService';
-import { studentService } from '../services/studentService';
-import { facultyService } from '../services/facultyService';
+import { securityShieldService, getDeviceFingerprint } from '../services/securityShieldService';
+import { SessionTimeoutModal } from '../components/auth/SessionTimeoutModal';
+
+export const SESSION_INACTIVITY_WARNING_MS = 25 * 60 * 1000; // 25 minutes
+export const SESSION_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+const ACTIVITY_EVENTS = [
+  'mousemove',
+  'mousedown',
+  'keydown',
+  'scroll',
+  'touchstart',
+  'pointerdown',
+  'click'
+] as const;
 
 /**
- * ==============================================================================
- * DEVELOPMENT AUTHENTICATION ARCHITECTURE
- * ==============================================================================
- * Data-agnostic role login: allows testing role-based workflows and permissions.
- * Does not inject fake academic profiles. If no profile is linked, displays
- * clear "Demo role active. No profile is currently linked." status in the UI.
- * ==============================================================================
+ * Production Zero-Trust Auth Flag.
+ * Demo login and client-side role elevation are permanently disabled.
  */
-export const DEV_AUTH_MODE = true;
+export const DEV_AUTH_MODE = false;
 
 export interface AuthUser {
   id: string;
   email: string;
+  username?: string;
   name: string;
   avatarUrl?: string;
   roles: UserRole[];
@@ -31,6 +40,7 @@ export interface AuthUser {
   isDemoRole?: boolean;
   googleEmail?: string;
   isGoogleLinked?: boolean;
+  mustChangePassword?: boolean;
 }
 
 export interface GoogleAuthProfile {
@@ -38,6 +48,11 @@ export interface GoogleAuthProfile {
   displayName: string;
   photoURL: string;
   uid: string;
+}
+
+export interface BootstrapStatus {
+  adminClaimed: boolean;
+  securityLevel: string;
 }
 
 interface AuthContextType {
@@ -48,23 +63,27 @@ interface AuthContextType {
   isLoading: boolean;
   isDevAuthMode: boolean;
   googleAuthUser: GoogleAuthProfile | null;
-  switchRole: (role: UserRole) => void;
-  loginAsDemoRole: (role: UserRole) => void;
-  loginAsDemoUser: (role: UserRole) => void; // alias for backwards compatibility
-  loginAsStudent: (student: Student) => void;
+  getBootstrapStatus: () => Promise<BootstrapStatus>;
+  claimInitialAdmin: (params: {
+    username: string;
+    email: string;
+    fullName: string;
+    password: string;
+  }) => Promise<{ success: boolean; error?: string }>;
+  switchRole: (role: UserRole) => Promise<{ success: boolean; error?: string }>;
   loginWithStudentCredentials: (
     identifier: string,
     pass: string,
-    studentsList: Student[]
-  ) => { success: boolean; error?: string; student?: Student };
+    studentsList?: Student[]
+  ) => Promise<{ success: boolean; error?: string; student?: Student }>;
   loginWithStaffCredentials: (
     identifier: string,
     pass: string,
-    facultyList: Faculty[]
-  ) => { success: boolean; error?: string; faculty?: Faculty };
+    facultyList?: Faculty[]
+  ) => Promise<{ success: boolean; error?: string; faculty?: Faculty }>;
   signInWithGoogle: (
-    studentsList: Student[],
-    facultyList: Faculty[]
+    studentsList?: Student[],
+    facultyList?: Faculty[]
   ) => Promise<{
     success: boolean;
     needsOnboardingLink?: boolean;
@@ -76,17 +95,28 @@ interface AuthContextType {
     googleEmail: string,
     registerNumberOrUsername: string,
     password: string,
-    studentsList: Student[],
+    studentsList?: Student[],
     googleProfile?: { displayName?: string; photoURL?: string; uid?: string }
   ) => Promise<{ success: boolean; error?: string; student?: Student }>;
   linkGoogleAccountToStaff: (
     googleEmail: string,
     identifier: string,
     password: string,
-    facultyList: Faculty[],
+    facultyList?: Faculty[],
     googleProfile?: { displayName?: string; photoURL?: string; uid?: string }
   ) => Promise<{ success: boolean; error?: string; faculty?: Faculty }>;
   unlinkGoogleAccount: (email: string) => Promise<{ success: boolean; error?: string }>;
+  changeOwnCredentials: (
+    currentPassword: string,
+    newUsername?: string,
+    newPassword?: string
+  ) => Promise<{ success: boolean; error?: string }>;
+  adminResetUserPassword: (
+    userType: 'STUDENT' | 'FACULTY' | 'ADMIN',
+    profileId: string,
+    newPassword: string,
+    forceChange?: boolean
+  ) => Promise<{ success: boolean; error?: string }>;
   updateCurrentUser: (updatedFields: Partial<AuthUser>) => void;
   updateFacultyProfile: (faculty: Partial<Faculty>) => void;
   linkFacultyProfile: (faculty: Faculty) => void;
@@ -95,82 +125,136 @@ interface AuthContextType {
   loginWithEmail: (email: string, pass: string) => Promise<{ error?: string }>;
   logout: () => Promise<void>;
   isLiveSupabase: boolean;
+  sessionTimeoutWarning: boolean;
+  sessionTimeoutRemainingSeconds: number;
+  sessionTimedOut: boolean;
+  extendSession: () => void;
+  dismissSessionTimedOutNotice: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const roleDisplayTitles: Record<UserRole, string> = {
-  STUDENT: 'Student Portal (Demo Role)',
-  TEACHER: 'Faculty Portal (Demo Role)',
-  HOD: 'Head of Department (Demo Role)',
-  PRINCIPAL: 'Principal Office (Demo Role)',
-  SUPER_ADMIN: 'Super Administrator (Demo Role)',
-  OFFICE_STAFF: 'Administrative Office (Demo Role)',
-  CLASS_TUTOR: 'Class Tutor (Demo Role)',
-  COURSE_COORDINATOR: 'Course Coordinator (Demo Role)',
-  ATTENDANCE_COORDINATOR: 'Attendance Coordinator (Demo Role)'
-};
+const LEGACY_AUTH_STORAGE_KEYS = [
+  'nss_auth_user',
+  'college_dev_logged_in',
+  'college_dev_role',
+  'nss_erp_faculty_credentials',
+  'nss_active_student_id',
+  'nss_google_account_links'
+];
 
-function createDemoUser(role: UserRole): AuthUser {
+function hydrateAuthUserFromRpc(payload: any, photoUrl?: string): AuthUser {
+  const u = payload?.user || {};
+  const rolesRaw: string[] = Array.isArray(u.roles) && u.roles.length > 0 ? u.roles : [u.activeRole || 'TEACHER'];
+  const roles = rolesRaw as UserRole[];
+  const activeRole = (u.activeRole || roles[0] || 'TEACHER') as UserRole;
+
+  let facultyProfile: Faculty | undefined;
+  if (u.facultyProfile) {
+    const fp = u.facultyProfile;
+    facultyProfile = {
+      id: fp.id || u.id,
+      fullName: fp.fullName || u.name,
+      email: fp.email || u.email,
+      username: u.username || fp.email || '',
+      password: '',
+      phoneNumber: fp.phone || '',
+      mobileNumber: fp.phone || '',
+      departmentId: fp.departmentId || u.departmentId || '',
+      designation: fp.designation || 'Faculty',
+      employeeId: fp.employeeId || '',
+      employeeCode: fp.employeeId || '',
+      roles: (fp.roles || roles) as UserRole[],
+      status: fp.status || 'ACTIVE',
+      isActive: true
+    } as Faculty;
+  }
+
+  let studentProfile: Student | undefined;
+  if (u.studentProfile) {
+    const sp = u.studentProfile;
+    studentProfile = {
+      id: sp.id || u.id,
+      fullName: sp.fullName || u.name,
+      rollNumber: sp.rollNumber || '',
+      admissionNumber: sp.admissionNumber || '',
+      universityRegisterNumber: sp.universityRegisterNumber || '',
+      username: u.username || sp.universityRegisterNumber || sp.admissionNumber || '',
+      password: '',
+      email: sp.email || u.email || '',
+      mobileNumber: sp.mobileNumber || '',
+      programmeId: sp.programmeId || '',
+      homeDepartmentId: sp.homeDepartmentId || u.departmentId || '',
+      currentSemester: sp.currentSemester || 'S1',
+      yearOfStudy: sp.yearOfStudy || 1,
+      admissionBatch: sp.admissionBatch || '',
+      status: sp.status || 'ACTIVE',
+      studentStatus: sp.status || 'ACTIVE'
+    } as Student;
+  }
+
   return {
-    id: `demo-${role.toLowerCase()}`,
-    email: `demo.${role.toLowerCase()}@nssce.ac.in`,
-    name: roleDisplayTitles[role] || `${role} Portal`,
-    roles: [role],
-    activeRole: role,
-    isDemoRole: true,
-    facultyProfile: undefined,
-    studentProfile: undefined,
-    departmentId: undefined
+    id: String(u.id || ''),
+    email: String(u.email || ''),
+    username: u.username ? String(u.username) : undefined,
+    name: String(u.name || u.email || 'Campus User'),
+    avatarUrl: photoUrl || undefined,
+    roles,
+    activeRole,
+    departmentId: u.departmentId ? String(u.departmentId) : undefined,
+    facultyProfile,
+    studentProfile,
+    isDemoRole: false,
+    googleEmail: u.email || undefined,
+    isGoogleLinked: Boolean(photoUrl),
+    mustChangePassword: Boolean(payload?.must_change_password)
   };
 }
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Initialize user session from localStorage if logged in
-  const [user, setUser] = useState<AuthUser | null>(() => {
-    const isLoggedIn = localStorage.getItem('college_dev_logged_in');
-    const savedRole = (localStorage.getItem('college_dev_role') as UserRole) || null;
-    const savedUser = localStorage.getItem('nss_auth_user');
-
-    if (isLoggedIn === 'true') {
-      if (savedUser) {
-        try {
-          const parsed = JSON.parse(savedUser);
-          if (savedRole) parsed.activeRole = savedRole;
-
-          // Check if there are persistent credential overrides for this faculty
-          if (parsed.facultyProfile?.id) {
-            const rawCreds = localStorage.getItem('nss_erp_faculty_credentials');
-            if (rawCreds) {
-              const creds = JSON.parse(rawCreds);
-              const override = creds[parsed.facultyProfile.id] || (parsed.facultyProfile.employeeCode ? creds[parsed.facultyProfile.employeeCode] : undefined) || creds[parsed.facultyProfile.email];
-              if (override?.username) parsed.facultyProfile.username = override.username;
-              if (override?.password) parsed.facultyProfile.password = override.password;
-            }
-          }
-          return parsed;
-        } catch (e) {
-          // ignore fallback
-        }
-      }
-
-      // Default fallback if marked logged in but user object was cleared
-      const role = savedRole || 'TEACHER';
-      return createDemoUser(role);
-    }
-
-    // Default: Public landing page first (user = null)
-    return null;
-  });
-
-  const [isLoading, setIsLoading] = useState(false);
+  // Strictly in-memory authenticated user (never hydrated from mutable localStorage)
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [googleAuthUser, setGoogleAuthUser] = useState<GoogleAuthProfile | null>(null);
 
-  // Listen for real-time auth synchronization events across components
+  // Automatic inactivity timeout state (25-min warning, 30-min forced logout)
+  const [sessionTimeoutWarning, setSessionTimeoutWarning] = useState(false);
+  const [sessionTimeoutRemainingSeconds, setSessionTimeoutRemainingSeconds] = useState(
+    Math.ceil((SESSION_INACTIVITY_TIMEOUT_MS - SESSION_INACTIVITY_WARNING_MS) / 1000)
+  );
+  const [sessionTimedOut, setSessionTimedOut] = useState(false);
+
+  const lastActivityAtRef = useRef<number>(Date.now());
+  const lastRecordedActivityAtRef = useRef<number>(0);
+  const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const logoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isWarningOpenRef = useRef<boolean>(false);
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const logoutRef = useRef<() => Promise<void>>(async () => {});
+
+  // Purge any legacy insecure auth/credential keys on boot and sync server security state
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        LEGACY_AUTH_STORAGE_KEYS.forEach(k => window.localStorage.removeItem(k));
+      } catch {
+        // ignore
+      }
+    }
+    securityShieldService.syncFromServer(getDeviceFingerprint());
+  }, []);
+
+  // Re-sync security shield when user identity or role changes
+  useEffect(() => {
+    securityShieldService.syncFromServer(getDeviceFingerprint());
+  }, [user?.id, user?.activeRole]);
+
+  // Listen for session invalidation events (e.g., server session expired or explicitly updated)
   useEffect(() => {
     const handleAuthUpdate = (e: Event) => {
-      const customEvent = e as CustomEvent<AuthUser>;
-      if (customEvent.detail) {
+      const customEvent = e as CustomEvent<AuthUser | null>;
+      if (customEvent.detail !== undefined) {
         setUser(customEvent.detail);
       }
     };
@@ -178,236 +262,206 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => window.removeEventListener('nss-auth-update', handleAuthUpdate);
   }, []);
 
+  // Restore cryptographically verified Supabase GoTrue session on mount ONLY (never hardcodes roles)
   useEffect(() => {
-    if (user) {
-      localStorage.setItem('nss_auth_user', JSON.stringify(user));
-      localStorage.setItem('college_dev_logged_in', 'true');
-      localStorage.setItem('college_dev_role', user.activeRole);
-    } else {
-      localStorage.removeItem('nss_auth_user');
-      localStorage.removeItem('college_dev_logged_in');
-      localStorage.removeItem('college_dev_role');
+    let active = true;
+    const init = async () => {
+      if (!isSupabaseConfigured || !supabase) {
+        if (active) setIsLoading(false);
+        return;
+      }
+      try {
+        const {
+          data: { session }
+        } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          const { data } = await supabase.rpc('complete_supabase_jwt_login', {
+            p_device_fingerprint: getDeviceFingerprint()
+          });
+          if (active && data?.success && data.session_token) {
+            setInMemoryErpSessionToken(data.session_token);
+            setUser(hydrateAuthUserFromRpc(data, session.user?.user_metadata?.avatar_url));
+          }
+        }
+      } catch {
+        // Leave user unauthenticated until explicit verified login
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    };
+    init();
+
+    if (!isSupabaseConfigured || !supabase) {
+      return () => {
+        active = false;
+      };
     }
-  }, [user]);
 
-  // Check Supabase session if configured
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return;
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        const email = session.user.email?.toLowerCase() || '';
-        setUser({
-          id: session.user.id,
-          email,
-          name: session.user.user_metadata?.full_name || email.split('@')[0] || 'College User',
-          roles: ['TEACHER'],
-          activeRole: 'TEACHER',
-          isDemoRole: false
-        });
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!active) return;
+      if (event === 'SIGNED_OUT') {
+        return;
+      }
+      if (event === 'SIGNED_IN' && session?.access_token) {
+        try {
+          const { data } = await supabase.rpc('complete_supabase_jwt_login', {
+            p_device_fingerprint: getDeviceFingerprint()
+          });
+          if (active && data?.success && data.session_token) {
+            setInMemoryErpSessionToken(data.session_token);
+            setUser(hydrateAuthUserFromRpc(data, session.user?.user_metadata?.avatar_url));
+          }
+        } catch {
+          // ignore if waiting for explicit onboarding link
+        }
       }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        const email = session.user.email?.toLowerCase() || '';
-        setUser({
-          id: session.user.id,
-          email,
-          name: session.user.user_metadata?.full_name || email.split('@')[0] || 'College User',
-          roles: ['TEACHER'],
-          activeRole: 'TEACHER',
-          isDemoRole: false
-        });
-      }
-    });
-
-    return () => subscription.unsubscribe();
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
-  const switchRole = (newRole: UserRole) => {
-    if (!user) return;
-    
-    // Security Enforcement:
-    // Only allow switching to roles that have been legitimately granted to this user (user.roles).
-    // If user is SUPER_ADMIN, they have global permission to inspect any portal.
-    const isSuperAdmin = user.roles.includes('SUPER_ADMIN') || user.activeRole === 'SUPER_ADMIN';
-    const isAllowed = isSuperAdmin || user.roles.includes(newRole);
+  const getBootstrapStatus = async (): Promise<BootstrapStatus> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { adminClaimed: true, securityLevel: 'HIGH_SHIELD' };
+    }
+    try {
+      const { data, error } = await supabase.rpc('get_bootstrap_status');
+      if (error || !data) {
+        return { adminClaimed: true, securityLevel: 'HIGH_SHIELD' };
+      }
+      return {
+        adminClaimed: Boolean(data.admin_claimed),
+        securityLevel: String(data.security_level || 'HIGH_SHIELD')
+      };
+    } catch {
+      return { adminClaimed: true, securityLevel: 'HIGH_SHIELD' };
+    }
+  };
 
-    if (!isAllowed) {
-      console.warn(`[Security RBAC Violation] User ${user.email} with roles [${user.roles.join(', ')}] attempted unauthorized switch to role: ${newRole}`);
-      return;
+  const claimInitialAdmin = async (params: {
+    username: string;
+    email: string;
+    fullName: string;
+    password: string;
+  }): Promise<{ success: boolean; error?: string }> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { success: false, error: 'Database connection is unavailable.' };
+    }
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase.rpc('claim_initial_admin', {
+        p_username: params.username.trim(),
+        p_email: params.email.trim().toLowerCase(),
+        p_full_name: params.fullName.trim(),
+        p_password: params.password,
+        p_device_fingerprint: getDeviceFingerprint()
+      });
+      if (error || !data?.success || !data.session_token) {
+        return {
+          success: false,
+          error: data?.error || error?.message || 'Unable to claim initial Super Administrator access.'
+        };
+      }
+      setInMemoryErpSessionToken(data.session_token);
+      setUser(hydrateAuthUserFromRpc(data));
+      await securityShieldService.syncFromServer(getDeviceFingerprint());
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Bootstrap request failed.' };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const switchRole = async (newRole: UserRole): Promise<{ success: boolean; error?: string }> => {
+    if (!user) return { success: false, error: 'Authentication required.' };
+    const isSuperAdmin = user.roles.includes('SUPER_ADMIN');
+    if (!isSuperAdmin && !user.roles.includes(newRole)) {
+      await securityShieldService.reportIncident({
+        severity: 'CRITICAL',
+        vector: 'UNAUTHORIZED_ROLE_SWITCH_ATTEMPT',
+        description: `User ${user.email || user.id} attempted unauthorized role elevation to ${newRole}.`,
+        targetResource: 'switch_erp_role',
+        actionTaken: 'BLOCKED_BY_RBAC'
+      });
+      return { success: false, error: 'Access Denied: Requested role is not assigned to your account.' };
+    }
+
+    if (!isSupabaseConfigured || !supabase) {
+      return { success: false, error: 'Database session verification unavailable.' };
+    }
+
+    const { data, error } = await supabase.rpc('switch_erp_role', { p_new_role: newRole });
+    if (error || !data?.success) {
+      return { success: false, error: data?.error || error?.message || 'Role switch rejected by server.' };
     }
 
     setUser(prev => {
       if (!prev) return null;
       return {
         ...prev,
-        activeRole: newRole,
-        roles: prev.roles.includes(newRole) ? prev.roles : [...prev.roles, newRole]
+        activeRole: newRole
       };
     });
-    localStorage.setItem('college_dev_role', newRole);
+    return { success: true };
   };
 
-  const loginAsDemoRole = (targetRole: UserRole) => {
-    setIsLoading(true);
-    setTimeout(() => {
-      const demoUser = createDemoUser(targetRole);
-      setUser(demoUser);
-      localStorage.setItem('college_dev_logged_in', 'true');
-      localStorage.setItem('college_dev_role', targetRole);
-      setIsLoading(false);
-    }, 100);
-  };
-
-  const updateCurrentUser = (updatedFields: Partial<AuthUser>) => {
-    setUser(prev => {
-      if (!prev) return null;
-      const next = { ...prev, ...updatedFields };
-      try {
-        localStorage.setItem('nss_auth_user', JSON.stringify(next));
-      } catch (e) {
-        // ignore
-      }
-      return next;
-    });
-  };
-
-  const updateFacultyProfile = (partialFac: Partial<Faculty>) => {
-    setUser(prev => {
-      if (!prev) return null;
-      const mergedFac: Faculty = {
-        ...(prev.facultyProfile || {}),
-        ...partialFac,
-        id: prev.facultyProfile?.id || prev.id
-      } as Faculty;
-
-      const next: AuthUser = {
-        ...prev,
-        name: partialFac.fullName || prev.name,
-        email: partialFac.email || prev.email,
-        facultyProfile: mergedFac
-      };
-      try {
-        localStorage.setItem('nss_auth_user', JSON.stringify(next));
-      } catch (e) {
-        // ignore
-      }
-      return next;
-    });
-  };
-
-  const linkFacultyProfile = (faculty: Faculty) => {
-    setUser(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        id: faculty.id,
-        name: faculty.fullName,
-        email: faculty.email,
-        avatarUrl: faculty.profileImageUrl,
-        facultyProfile: faculty,
-        departmentId: faculty.departmentId,
-        roles: faculty.roles,
-        activeRole: faculty.roles[0] || prev.activeRole,
-        isDemoRole: false
-      };
-    });
-  };
-
-  const linkStudentProfile = (student: Student) => {
-    setUser(prev => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        id: student.id,
-        name: student.fullName,
-        email: student.email,
-        avatarUrl: student.profilePhotoUrl,
-        studentProfile: student,
-        departmentId: student.homeDepartmentId,
-        roles: ['STUDENT'],
-        activeRole: 'STUDENT',
-        isDemoRole: false
-      };
-    });
-  };
-
-  const loginAsStudent = (student: Student) => {
-    const studentUser: AuthUser = {
-      id: student.id,
-      name: student.fullName,
-      email: student.email,
-      avatarUrl: student.profilePhotoUrl,
-      studentProfile: student,
-      departmentId: student.homeDepartmentId,
-      roles: ['STUDENT'],
-      activeRole: 'STUDENT',
-      isDemoRole: false
-    };
-    setUser(studentUser);
-    localStorage.setItem('college_dev_logged_in', 'true');
-    localStorage.setItem('college_dev_role', 'STUDENT');
-    localStorage.setItem('nss_auth_user', JSON.stringify(studentUser));
-  };
-
-  const loginWithStudentCredentials = (
+  const loginWithStudentCredentials = async (
     identifier: string,
-    pass: string,
-    studentsList: Student[]
-  ): { success: boolean; error?: string; student?: Student } => {
-    const cleanId = (identifier || '').trim().toLowerCase();
+    pass: string
+  ): Promise<{ success: boolean; error?: string; student?: Student }> => {
+    const cleanId = (identifier || '').trim();
     const cleanPass = pass || '';
 
     if (!cleanId) {
-      return { success: false, error: 'Please enter your Student Username or University Register Number.' };
+      return { success: false, error: 'Please enter your University Register Number or Username.' };
     }
     if (!cleanPass) {
       return { success: false, error: 'Please enter your password.' };
     }
-
-    // Rules check
-    if (cleanPass.length < 4) {
-      return { success: false, error: 'Password must be at least 4 characters long.' };
-    }
-    if (!/\d/.test(cleanPass)) {
-      return { success: false, error: 'Password must contain at least one number (0-9).' };
+    if (!isSupabaseConfigured || !supabase) {
+      return { success: false, error: 'Database connection unavailable.' };
     }
 
-    // Find student by username, universityRegisterNumber, admissionNumber, or email
-    const matched = studentsList.find(s => {
-      const matchUsername = s.username && s.username.toLowerCase() === cleanId;
-      const matchUnivReg = s.universityRegisterNumber && s.universityRegisterNumber.toLowerCase() === cleanId;
-      const matchAdm = s.admissionNumber && s.admissionNumber.toLowerCase() === cleanId;
-      const matchEmail = s.email && s.email.toLowerCase() === cleanId;
-      return matchUsername || matchUnivReg || matchAdm || matchEmail;
-    });
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase.rpc('verify_institutional_login', {
+        p_role_mode: 'STUDENT',
+        p_identifier: cleanId,
+        p_password: cleanPass,
+        p_device_fingerprint: getDeviceFingerprint()
+      });
 
-    if (!matched) {
-      return {
-        success: false,
-        error: `No student record found matching '${identifier}'. Please check your Username or University Register Number.`
-      };
-    }
-
-    // Check password if set
-    if (matched.password) {
-      if (matched.password !== cleanPass && cleanPass !== 'Nss2026!') {
-        return { success: false, error: 'Incorrect password. Password must match the student record.' };
+      if (error || !data?.success || !data.session_token) {
+        await securityShieldService.syncFromServer(getDeviceFingerprint());
+        return {
+          success: false,
+          error: data?.error || error?.message || 'Invalid credentials. Please check your register number and password.'
+        };
       }
-    }
 
-    loginAsStudent(matched);
-    return { success: true, student: matched };
+      setInMemoryErpSessionToken(data.session_token);
+      const authed = hydrateAuthUserFromRpc(data);
+      setUser(authed);
+      await securityShieldService.syncFromServer(getDeviceFingerprint());
+      return { success: true, student: authed.studentProfile };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Login failed. Please try again.' };
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const loginWithStaffCredentials = (
+  const loginWithStaffCredentials = async (
     identifier: string,
-    pass: string,
-    facultyList: Faculty[]
-  ): { success: boolean; error?: string; faculty?: Faculty } => {
-    const cleanId = (identifier || '').trim().toLowerCase();
+    pass: string
+  ): Promise<{ success: boolean; error?: string; faculty?: Faculty }> => {
+    const cleanId = (identifier || '').trim();
     const cleanPass = (pass || '').trim();
 
     if (!cleanId) {
@@ -416,178 +470,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!cleanPass) {
       return { success: false, error: 'Please enter your portal password.' };
     }
-
-    // Check for Master Super Admin credentials
-    if (
-      (cleanId === 'admin' || cleanId === 'superadmin' || cleanId === 'admin@nssce.ac.in') &&
-      (cleanPass === 'Admin2026!' || cleanPass === 'Nss2026!' || cleanPass === 'Admin@2026')
-    ) {
-      const adminUser: AuthUser = {
-        id: 'super-admin-master',
-        email: 'admin@nssce.ac.in',
-        name: 'System Super Administrator',
-        roles: ['SUPER_ADMIN', 'PRINCIPAL', 'HOD', 'TEACHER'],
-        activeRole: 'SUPER_ADMIN',
-        isDemoRole: false
-      };
-      setUser(adminUser);
-      localStorage.setItem('college_dev_logged_in', 'true');
-      localStorage.setItem('college_dev_role', 'SUPER_ADMIN');
-      localStorage.setItem('nss_auth_user', JSON.stringify(adminUser));
-      return { success: true };
+    if (!isSupabaseConfigured || !supabase) {
+      return { success: false, error: 'Database connection unavailable.' };
     }
 
-    // Check for Principal master login
-    if (
-      (cleanId === 'principal' || cleanId === 'principal@nssce.ac.in') &&
-      (cleanPass === 'Principal2026!' || cleanPass === 'Nss2026!' || cleanPass === 'Principal@2026')
-    ) {
-      const principalUser: AuthUser = {
-        id: 'principal-master',
-        email: 'principal@nssce.ac.in',
-        name: 'Dr. Principal (Office of the Principal)',
-        roles: ['PRINCIPAL', 'TEACHER'],
-        activeRole: 'PRINCIPAL',
-        isDemoRole: false
-      };
-      setUser(principalUser);
-      localStorage.setItem('college_dev_logged_in', 'true');
-      localStorage.setItem('college_dev_role', 'PRINCIPAL');
-      localStorage.setItem('nss_auth_user', JSON.stringify(principalUser));
-      return { success: true };
-    }
-
-    // Rules check
-    if (cleanPass.length < 4) {
-      return { success: false, error: 'Password must be at least 4 characters long.' };
-    }
-    if (!/\d/.test(cleanPass)) {
-      return { success: false, error: 'Password must contain at least one number (0-9).' };
-    }
-
-    // Search in faculty list
-    const matched = facultyList.find(f => {
-      const matchEmail = f.email && f.email.toLowerCase() === cleanId;
-      const matchUsername = f.username && f.username.toLowerCase() === cleanId;
-      const matchEmpCode =
-        (f.employeeCode && f.employeeCode.toLowerCase() === cleanId) ||
-        (f.employeeId && f.employeeId.toLowerCase() === cleanId);
-      return matchEmail || matchUsername || matchEmpCode;
-    });
-
-    if (!matched) {
-      return {
-        success: false,
-        error: `No staff record found matching '${identifier}'. Please check your Official Email or Staff Username.`
-      };
-    }
-
-    // Check password if set
-    if (matched.password) {
-      if (matched.password !== cleanPass && cleanPass !== 'Staff2026!' && cleanPass !== 'Nss2026!') {
-        return { success: false, error: 'Incorrect password. Please enter the correct staff password.' };
-      }
-    }
-
-    const staffRoles: UserRole[] =
-      matched.roles && matched.roles.length > 0 ? (matched.roles as UserRole[]) : ['TEACHER'];
-    const staffUser: AuthUser = {
-      id: matched.id,
-      name: matched.fullName,
-      email: matched.email,
-      avatarUrl: matched.profileImageUrl,
-      facultyProfile: matched,
-      departmentId: matched.departmentId,
-      roles: staffRoles,
-      activeRole: staffRoles[0] || 'TEACHER',
-      isDemoRole: false
-    };
-
-    setUser(staffUser);
-    localStorage.setItem('college_dev_logged_in', 'true');
-    localStorage.setItem('college_dev_role', staffUser.activeRole);
-    localStorage.setItem('nss_auth_user', JSON.stringify(staffUser));
-    return { success: true, faculty: matched };
-  };
-
-  const unlinkProfile = () => {
-    setUser(prev => {
-      if (!prev) return null;
-      return createDemoUser(prev.activeRole);
-    });
-  };
-
-  const loginWithEmail = async (email: string, _pass: string) => {
     setIsLoading(true);
     try {
-      const cleanEmail = email.trim().toLowerCase();
+      const { data, error } = await supabase.rpc('verify_institutional_login', {
+        p_role_mode: 'STAFF',
+        p_identifier: cleanId,
+        p_password: cleanPass,
+        p_device_fingerprint: getDeviceFingerprint()
+      });
 
-      // If Supabase live auth is active
-      if (isSupabaseConfigured && supabase) {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: cleanEmail,
-          password: _pass
-        });
-        if (error) {
-          setIsLoading(false);
-          return { error: error.message };
-        }
-        if (data.user) {
-          const u: AuthUser = {
-            id: data.user.id,
-            email: data.user.email || cleanEmail,
-            name: data.user.user_metadata?.full_name || cleanEmail.split('@')[0],
-            roles: ['TEACHER'],
-            activeRole: 'TEACHER',
-            isDemoRole: false
-          };
-          setUser(u);
-          localStorage.setItem('college_dev_logged_in', 'true');
-          localStorage.setItem('college_dev_role', 'TEACHER');
-        }
-        setIsLoading(false);
-        return {};
+      if (error || !data?.success || !data.session_token) {
+        await securityShieldService.syncFromServer(getDeviceFingerprint());
+        return {
+          success: false,
+          error: data?.error || error?.message || 'Invalid credentials. Please verify your username and password.'
+        };
       }
 
-      // Generic role login fallback
-      const u: AuthUser = {
-        id: `user-${Date.now()}`,
-        email: cleanEmail,
-        name: cleanEmail.split('@')[0],
-        roles: ['TEACHER'],
-        activeRole: 'TEACHER',
-        isDemoRole: true
-      };
-      setUser(u);
-      localStorage.setItem('college_dev_logged_in', 'true');
-      localStorage.setItem('college_dev_role', 'TEACHER');
-      setIsLoading(false);
-      return {};
+      setInMemoryErpSessionToken(data.session_token);
+      const authed = hydrateAuthUserFromRpc(data);
+      setUser(authed);
+      await securityShieldService.syncFromServer(getDeviceFingerprint());
+      return { success: true, faculty: authed.facultyProfile };
     } catch (err: any) {
+      return { success: false, error: err?.message || 'Login failed. Please try again.' };
+    } finally {
       setIsLoading(false);
-      return { error: err.message || 'Login failed' };
     }
   };
 
   /**
-   * ============================================================================
-   * GOOGLE SIGN-IN INTEGRATION (1-TAP MOBILE & DESKTOP AUTHENTICATION)
-   * ============================================================================
-   * Uses Firebase Auth GoogleAuthProvider with prompt='select_account'.
-   * When clicked on mobile or web, it immediately shows all Google accounts
-   * present on the device so the user can choose their registered college email.
-   * Matches seamlessly against:
-   *  1. Super Admin master accounts
-   *  2. Principal office accounts
-   *  3. Enrolled students (by registered email or previously linked account)
-   *  4. Appointed faculty & staff (by official email or linked account)
-   *  5. If not yet linked: prompts an elegant onboarding credential link modal.
-   * ============================================================================
+   * Cryptographically Verified Google Sign-In
+   * 1. Prompts Google OAuth popup via Firebase Auth (`emailVerified` required).
+   * 2. Exchanges the Firebase OIDC ID token with Supabase GoTrue (`signInWithIdToken`) and calls `complete_supabase_jwt_login`.
+   * 3. Never trusts plain email matching client-side without verified JWT verification or institutional password proof.
    */
-  const signInWithGoogle = async (
-    studentsList: Student[],
-    facultyList: Faculty[]
-  ): Promise<{
+  const signInWithGoogle = async (): Promise<{
     success: boolean;
     needsOnboardingLink?: boolean;
     googleUser?: GoogleAuthProfile;
@@ -597,18 +519,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsLoading(true);
     try {
       const provider = new GoogleAuthProvider();
-      // Forces the account chooser to appear showing all Google accounts on device
-      provider.setCustomParameters({
-        prompt: 'select_account'
-      });
+      provider.setCustomParameters({ prompt: 'select_account' });
 
       const cred = await signInWithPopup(firebaseAuth, provider);
       const gUser = cred.user;
       const cleanEmail = (gUser.email || '').trim().toLowerCase();
 
-      if (!cleanEmail) {
+      if (!cleanEmail || !gUser.emailVerified) {
         setIsLoading(false);
-        return { success: false, error: 'No email returned from selected Google account.' };
+        return { success: false, error: 'A verified Google account email is required.' };
       }
 
       const parsedGoogleUser: GoogleAuthProfile = {
@@ -619,189 +538,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
       setGoogleAuthUser(parsedGoogleUser);
 
-      // 1. Check Super Admin & Principal Master Accounts
-      const isSuperAdminEmail =
-        cleanEmail === 'admin@nssce.ac.in' ||
-        cleanEmail === 'tatvanyxdev@gmail.com' ||
-        cleanEmail === 'superadmin@nssce.ac.in';
-
-      if (isSuperAdminEmail) {
-        const adminUser: AuthUser = {
-          id: 'super-admin-master',
-          email: cleanEmail,
-          name: parsedGoogleUser.displayName || 'System Super Administrator',
-          avatarUrl: parsedGoogleUser.photoURL || undefined,
-          roles: ['SUPER_ADMIN', 'PRINCIPAL', 'HOD', 'TEACHER'],
-          activeRole: 'SUPER_ADMIN',
-          isDemoRole: false,
-          googleEmail: cleanEmail,
-          isGoogleLinked: true
-        };
-        setUser(adminUser);
-        localStorage.setItem('college_dev_logged_in', 'true');
-        localStorage.setItem('college_dev_role', 'SUPER_ADMIN');
-        localStorage.setItem('nss_auth_user', JSON.stringify(adminUser));
+      if (!isSupabaseConfigured || !supabase) {
         setIsLoading(false);
-        return { success: true, matchedRole: 'SUPER_ADMIN' };
+        return { success: false, error: 'Database authentication service unavailable.' };
       }
 
-      if (cleanEmail === 'principal@nssce.ac.in') {
-        const principalUser: AuthUser = {
-          id: 'principal-master',
-          email: cleanEmail,
-          name: parsedGoogleUser.displayName || 'Dr. Principal (Office of the Principal)',
-          avatarUrl: parsedGoogleUser.photoURL || undefined,
-          roles: ['PRINCIPAL', 'TEACHER'],
-          activeRole: 'PRINCIPAL',
-          isDemoRole: false,
-          googleEmail: cleanEmail,
-          isGoogleLinked: true
-        };
-        setUser(principalUser);
-        localStorage.setItem('college_dev_logged_in', 'true');
-        localStorage.setItem('college_dev_role', 'PRINCIPAL');
-        localStorage.setItem('nss_auth_user', JSON.stringify(principalUser));
-        setIsLoading(false);
-        return { success: true, matchedRole: 'PRINCIPAL' };
-      }
+      const credentialResult = GoogleAuthProvider.credentialFromResult(cred);
+      const oauthIdToken = credentialResult?.idToken;
+      const firebaseIdToken = await gUser.getIdToken();
+      const tokenToExchange = oauthIdToken || firebaseIdToken;
 
-      // 2. Check Direct Student Match in registered student database
-      const matchedStudent = studentsList.find(s => {
-        const emailMatch = s.email && s.email.trim().toLowerCase() === cleanEmail;
-        const googleEmailMatch = (s as any).googleEmail && (s as any).googleEmail.trim().toLowerCase() === cleanEmail;
-        return emailMatch || googleEmailMatch;
-      });
+      if (tokenToExchange) {
+        const { error: jwtErr } = await supabase.auth.signInWithIdToken({
+          provider: 'google',
+          token: tokenToExchange
+        });
 
-      if (matchedStudent) {
-        const studentUser: AuthUser = {
-          id: matchedStudent.id,
-          name: matchedStudent.fullName,
-          email: cleanEmail,
-          avatarUrl: matchedStudent.profilePhotoUrl || parsedGoogleUser.photoURL || undefined,
-          studentProfile: {
-            ...matchedStudent,
-            email: cleanEmail,
-            profilePhotoUrl: matchedStudent.profilePhotoUrl || parsedGoogleUser.photoURL || undefined
-          },
-          departmentId: matchedStudent.homeDepartmentId,
-          roles: ['STUDENT'],
-          activeRole: 'STUDENT',
-          isDemoRole: false,
-          googleEmail: cleanEmail,
-          isGoogleLinked: true
-        };
-        setUser(studentUser);
-        localStorage.setItem('college_dev_logged_in', 'true');
-        localStorage.setItem('college_dev_role', 'STUDENT');
-        localStorage.setItem('nss_auth_user', JSON.stringify(studentUser));
-        setIsLoading(false);
-        return { success: true, matchedRole: 'STUDENT' };
-      }
+        if (!jwtErr) {
+          const { data: jwtLogin } = await supabase.rpc('complete_supabase_jwt_login', {
+            p_device_fingerprint: getDeviceFingerprint()
+          });
 
-      // 3. Check Direct Faculty / Staff Match in registered faculty database
-      const matchedFaculty = facultyList.find(f => {
-        const emailMatch = f.email && f.email.trim().toLowerCase() === cleanEmail;
-        const googleEmailMatch = (f as any).googleEmail && (f as any).googleEmail.trim().toLowerCase() === cleanEmail;
-        return emailMatch || googleEmailMatch;
-      });
-
-      if (matchedFaculty) {
-        const staffRoles: UserRole[] =
-          matchedFaculty.roles && matchedFaculty.roles.length > 0 ? (matchedFaculty.roles as UserRole[]) : ['TEACHER'];
-        const staffUser: AuthUser = {
-          id: matchedFaculty.id,
-          name: matchedFaculty.fullName,
-          email: cleanEmail,
-          avatarUrl: matchedFaculty.profileImageUrl || parsedGoogleUser.photoURL || undefined,
-          facultyProfile: {
-            ...matchedFaculty,
-            email: cleanEmail,
-            profileImageUrl: matchedFaculty.profileImageUrl || parsedGoogleUser.photoURL || undefined
-          },
-          departmentId: matchedFaculty.departmentId,
-          roles: staffRoles,
-          activeRole: staffRoles[0] || 'TEACHER',
-          isDemoRole: false,
-          googleEmail: cleanEmail,
-          isGoogleLinked: true
-        };
-        setUser(staffUser);
-        localStorage.setItem('college_dev_logged_in', 'true');
-        localStorage.setItem('college_dev_role', staffUser.activeRole);
-        localStorage.setItem('nss_auth_user', JSON.stringify(staffUser));
-        setIsLoading(false);
-        return { success: true, matchedRole: staffUser.activeRole };
-      }
-
-      // 4. Check Persistent Firestore / LocalStorage Google Link Mapping
-      const existingLink = await firebaseSyncService.getGoogleAccountLink(cleanEmail);
-      if (existingLink) {
-        if (existingLink.userType === 'STUDENT') {
-          const linkedStudent = studentsList.find(
-            s =>
-              s.id === existingLink.profileId ||
-              (s.universityRegisterNumber &&
-                s.universityRegisterNumber.toLowerCase() === existingLink.identifier?.toLowerCase()) ||
-              (s.admissionNumber &&
-                s.admissionNumber.toLowerCase() === existingLink.identifier?.toLowerCase())
-          );
-          if (linkedStudent) {
-            const studentUser: AuthUser = {
-              id: linkedStudent.id,
-              name: linkedStudent.fullName,
-              email: cleanEmail,
-              avatarUrl: linkedStudent.profilePhotoUrl || parsedGoogleUser.photoURL || undefined,
-              studentProfile: linkedStudent,
-              departmentId: linkedStudent.homeDepartmentId,
-              roles: ['STUDENT'],
-              activeRole: 'STUDENT',
-              isDemoRole: false,
-              googleEmail: cleanEmail,
-              isGoogleLinked: true
-            };
-            setUser(studentUser);
-            localStorage.setItem('college_dev_logged_in', 'true');
-            localStorage.setItem('college_dev_role', 'STUDENT');
-            localStorage.setItem('nss_auth_user', JSON.stringify(studentUser));
+          if (jwtLogin?.success && jwtLogin.session_token) {
+            setInMemoryErpSessionToken(jwtLogin.session_token);
+            const authed = hydrateAuthUserFromRpc(jwtLogin, parsedGoogleUser.photoURL);
+            setUser(authed);
+            await securityShieldService.syncFromServer(getDeviceFingerprint());
             setIsLoading(false);
-            return { success: true, matchedRole: 'STUDENT' };
-          }
-        } else if (existingLink.userType === 'STAFF') {
-          const linkedFaculty = facultyList.find(
-            f =>
-              f.id === existingLink.profileId ||
-              (f.employeeCode &&
-                f.employeeCode.toLowerCase() === existingLink.identifier?.toLowerCase()) ||
-              (f.username &&
-                f.username.toLowerCase() === existingLink.identifier?.toLowerCase())
-          );
-          if (linkedFaculty) {
-            const staffRoles: UserRole[] =
-              linkedFaculty.roles && linkedFaculty.roles.length > 0 ? (linkedFaculty.roles as UserRole[]) : ['TEACHER'];
-            const staffUser: AuthUser = {
-              id: linkedFaculty.id,
-              name: linkedFaculty.fullName,
-              email: cleanEmail,
-              avatarUrl: linkedFaculty.profileImageUrl || parsedGoogleUser.photoURL || undefined,
-              facultyProfile: linkedFaculty,
-              departmentId: linkedFaculty.departmentId,
-              roles: staffRoles,
-              activeRole: staffRoles[0] || 'TEACHER',
-              isDemoRole: false,
-              googleEmail: cleanEmail,
-              isGoogleLinked: true
-            };
-            setUser(staffUser);
-            localStorage.setItem('college_dev_logged_in', 'true');
-            localStorage.setItem('college_dev_role', staffUser.activeRole);
-            localStorage.setItem('nss_auth_user', JSON.stringify(staffUser));
-            setIsLoading(false);
-            return { success: true, matchedRole: staffUser.activeRole };
+            return { success: true, matchedRole: authed.activeRole };
           }
         }
       }
 
-      // 5. Account verified by Google, but not yet linked to an institutional record
+      // Google identity is verified, require institutional credential verification to mint an ERP session or link record
       setIsLoading(false);
       return {
         success: false,
@@ -811,13 +580,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (err: any) {
       setIsLoading(false);
       if (err?.code === 'auth/popup-closed-by-user') {
-        return { success: false, error: 'Sign-in window was closed. Please try again to choose your account.' };
+        return { success: false, error: 'Sign-in window was closed. Please try again.' };
       }
       if (err?.code === 'auth/popup-blocked') {
-        return { success: false, error: 'The Google Sign-In popup was blocked by your browser. Please allow popups for this site.' };
+        return { success: false, error: 'Google Sign-In popup was blocked by your browser. Please allow popups for this site.' };
       }
       if (err?.code === 'auth/cancelled-popup-request') {
-        return { success: false, error: 'Another sign-in request was in progress. Please try again.' };
+        return { success: false, error: 'Another sign-in request was already in progress.' };
       }
       return { success: false, error: err?.message || 'Google Sign-In failed. Please try again.' };
     }
@@ -827,200 +596,480 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     googleEmail: string,
     registerNumberOrUsername: string,
     password: string,
-    studentsList: Student[],
+    _studentsList?: Student[],
     googleProfile?: { displayName?: string; photoURL?: string; uid?: string }
   ): Promise<{ success: boolean; error?: string; student?: Student }> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { success: false, error: 'Database connection unavailable.' };
+    }
     setIsLoading(true);
-    const cleanEmail = (googleEmail || '').trim().toLowerCase();
-
-    // Verify student credentials against existing master register
-    const credResult = loginWithStudentCredentials(registerNumberOrUsername, password, studentsList);
-    if (!credResult.success || !credResult.student) {
-      setIsLoading(false);
-      return { success: false, error: credResult.error || 'Invalid student credentials.' };
-    }
-
-    const matched = credResult.student;
-    const updatedStudent: Student = {
-      ...matched,
-      email: cleanEmail,
-      profilePhotoUrl: matched.profilePhotoUrl || googleProfile?.photoURL || undefined
-    };
-
-    // Save link mapping to Firestore & LocalStorage
-    const linkId = cleanEmail.replace(/[^a-zA-Z0-9_-]/g, '_');
-    await firebaseSyncService.syncGoogleAccountLink({
-      id: linkId,
-      email: cleanEmail,
-      userType: 'STUDENT',
-      profileId: matched.id,
-      name: matched.fullName,
-      identifier: matched.universityRegisterNumber || matched.admissionNumber,
-      linkedAt: new Date().toISOString()
-    });
-
-    // Update student in database/service
     try {
-      await studentService.updateStudent(matched.id, {
-        email: cleanEmail,
-        profilePhotoUrl: updatedStudent.profilePhotoUrl
+      const cleanEmail = (googleEmail || '').trim().toLowerCase();
+      const { data, error } = await supabase.rpc('verify_and_link_google_account', {
+        p_google_email: cleanEmail,
+        p_google_uid: googleProfile?.uid || firebaseAuth.currentUser?.uid || '',
+        p_role_mode: 'STUDENT',
+        p_identifier: registerNumberOrUsername.trim(),
+        p_password: password,
+        p_device_fingerprint: getDeviceFingerprint()
       });
-    } catch (e) {
-      console.warn('Student email update fallback:', e);
+
+      if (error || !data?.success || !data.session_token) {
+        return { success: false, error: data?.error || error?.message || 'Invalid student credentials.' };
+      }
+
+      setInMemoryErpSessionToken(data.session_token);
+      const authed = hydrateAuthUserFromRpc(data, googleProfile?.photoURL);
+      setUser(authed);
+      await securityShieldService.syncFromServer(getDeviceFingerprint());
+      return { success: true, student: authed.studentProfile };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Google linking failed.' };
+    } finally {
+      setIsLoading(false);
     }
-
-    // Set active student session
-    const studentUser: AuthUser = {
-      id: matched.id,
-      name: matched.fullName,
-      email: cleanEmail,
-      avatarUrl: updatedStudent.profilePhotoUrl,
-      studentProfile: updatedStudent,
-      departmentId: matched.homeDepartmentId,
-      roles: ['STUDENT'],
-      activeRole: 'STUDENT',
-      isDemoRole: false,
-      googleEmail: cleanEmail,
-      isGoogleLinked: true
-    };
-    setUser(studentUser);
-    localStorage.setItem('college_dev_logged_in', 'true');
-    localStorage.setItem('college_dev_role', 'STUDENT');
-    localStorage.setItem('nss_auth_user', JSON.stringify(studentUser));
-    setIsLoading(false);
-
-    return { success: true, student: updatedStudent };
   };
 
   const linkGoogleAccountToStaff = async (
     googleEmail: string,
     identifier: string,
     password: string,
-    facultyList: Faculty[],
+    _facultyList?: Faculty[],
     googleProfile?: { displayName?: string; photoURL?: string; uid?: string }
   ): Promise<{ success: boolean; error?: string; faculty?: Faculty }> => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { success: false, error: 'Database connection unavailable.' };
+    }
     setIsLoading(true);
-    const cleanEmail = (googleEmail || '').trim().toLowerCase();
-
-    const credResult = loginWithStaffCredentials(identifier, password, facultyList);
-    if (!credResult.success) {
-      setIsLoading(false);
-      return { success: false, error: credResult.error || 'Invalid staff credentials.' };
-    }
-
-    const matched = credResult.faculty || facultyList.find(f =>
-      (f.email && f.email.toLowerCase() === identifier.toLowerCase()) ||
-      (f.username && f.username.toLowerCase() === identifier.toLowerCase()) ||
-      (f.employeeCode && f.employeeCode.toLowerCase() === identifier.toLowerCase())
-    );
-
-    if (!matched) {
-      setIsLoading(false);
-      return { success: true };
-    }
-
-    const updatedFaculty: Faculty = {
-      ...matched,
-      email: cleanEmail,
-      profileImageUrl: matched.profileImageUrl || googleProfile?.photoURL || undefined
-    };
-
-    const linkId = cleanEmail.replace(/[^a-zA-Z0-9_-]/g, '_');
-    await firebaseSyncService.syncGoogleAccountLink({
-      id: linkId,
-      email: cleanEmail,
-      userType: 'STAFF',
-      profileId: matched.id,
-      name: matched.fullName,
-      identifier: matched.employeeCode || matched.username || matched.id,
-      linkedAt: new Date().toISOString()
-    });
-
     try {
-      await facultyService.updateFaculty(matched.id, {
-        email: cleanEmail,
-        profileImageUrl: updatedFaculty.profileImageUrl
+      const cleanEmail = (googleEmail || '').trim().toLowerCase();
+      const { data, error } = await supabase.rpc('verify_and_link_google_account', {
+        p_google_email: cleanEmail,
+        p_google_uid: googleProfile?.uid || firebaseAuth.currentUser?.uid || '',
+        p_role_mode: 'STAFF',
+        p_identifier: identifier.trim(),
+        p_password: password,
+        p_device_fingerprint: getDeviceFingerprint()
       });
-    } catch (e) {
-      console.warn('Faculty email update fallback:', e);
-    }
 
-    const staffRoles: UserRole[] =
-      matched.roles && matched.roles.length > 0 ? (matched.roles as UserRole[]) : ['TEACHER'];
-    const staffUser: AuthUser = {
-      id: matched.id,
-      name: matched.fullName,
-      email: cleanEmail,
-      avatarUrl: updatedFaculty.profileImageUrl,
-      facultyProfile: updatedFaculty,
-      departmentId: matched.departmentId,
-      roles: staffRoles,
-      activeRole: staffRoles[0] || 'TEACHER',
-      isDemoRole: false,
-      googleEmail: cleanEmail,
-      isGoogleLinked: true
-    };
-    setUser(staffUser);
-    localStorage.setItem('college_dev_logged_in', 'true');
-    localStorage.setItem('college_dev_role', staffUser.activeRole);
-    localStorage.setItem('nss_auth_user', JSON.stringify(staffUser));
-    setIsLoading(false);
-
-    return { success: true, faculty: updatedFaculty };
-  };
-
-  const unlinkGoogleAccount = async (email: string): Promise<{ success: boolean; error?: string }> => {
-    try {
-      await firebaseSyncService.deleteGoogleAccountLink(email);
-      if (user) {
-        updateCurrentUser({ googleEmail: undefined, isGoogleLinked: false });
+      if (error || !data?.success || !data.session_token) {
+        return { success: false, error: data?.error || error?.message || 'Invalid staff credentials.' };
       }
-      return { success: true };
+
+      setInMemoryErpSessionToken(data.session_token);
+      const authed = hydrateAuthUserFromRpc(data, googleProfile?.photoURL);
+      setUser(authed);
+      await securityShieldService.syncFromServer(getDeviceFingerprint());
+      return { success: true, faculty: authed.facultyProfile };
     } catch (err: any) {
-      return { success: false, error: err.message };
+      return { success: false, error: err?.message || 'Google linking failed.' };
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const logout = async () => {
-    try {
-      await firebaseSignOut(firebaseAuth);
-    } catch (e) {
-      // ignore
+  const changeOwnCredentials = async (
+    currentPassword: string,
+    newUsername?: string,
+    newPassword?: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!isSupabaseConfigured || !supabase || !user) {
+      return { success: false, error: 'Active authenticated session required.' };
     }
+    const { data, error } = await supabase.rpc('change_own_credentials', {
+      p_current_password: currentPassword,
+      p_new_username: newUsername ? newUsername.trim() : null,
+      p_new_password: newPassword ? newPassword.trim() : null
+    });
+    if (error || !data?.success) {
+      return { success: false, error: data?.error || error?.message || 'Failed to update credentials.' };
+    }
+    if (newUsername) {
+      const cleanU = newUsername.trim();
+      setUser(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          username: cleanU,
+          mustChangePassword: false,
+          facultyProfile: prev.facultyProfile ? { ...prev.facultyProfile, username: cleanU } : undefined,
+          studentProfile: prev.studentProfile ? { ...prev.studentProfile, username: cleanU.toUpperCase() } : undefined
+        };
+      });
+    }
+    return { success: true };
+  };
+
+  const adminResetUserPassword = async (
+    userType: 'STUDENT' | 'FACULTY' | 'ADMIN',
+    profileId: string,
+    newPassword: string,
+    forceChange = true
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!isSupabaseConfigured || !supabase || !user) {
+      return { success: false, error: 'Administrator session required.' };
+    }
+    const { data, error } = await supabase.rpc('admin_reset_user_password', {
+      p_user_type: userType,
+      p_profile_id: profileId,
+      p_new_password: newPassword,
+      p_force_change: forceChange
+    });
+    if (error || !data?.success) {
+      return { success: false, error: data?.error || error?.message || 'Failed to reset user password.' };
+    }
+    return { success: true };
+  };
+
+  const unlinkGoogleAccount = async (_email: string): Promise<{ success: boolean; error?: string }> => {
+    if (user) {
+      setUser(prev => (prev ? { ...prev, googleEmail: undefined, isGoogleLinked: false } : null));
+    }
+    return { success: true };
+  };
+
+  const updateCurrentUser = (updatedFields: Partial<AuthUser>) => {
+    setUser(prev => (prev ? { ...prev, ...updatedFields } : null));
+  };
+
+  const updateFacultyProfile = (partialFac: Partial<Faculty>) => {
+    setUser(prev => {
+      if (!prev) return null;
+      const mergedFac: Faculty = {
+        ...(prev.facultyProfile || {}),
+        ...partialFac,
+        id: prev.facultyProfile?.id || prev.id
+      } as Faculty;
+      return {
+        ...prev,
+        name: partialFac.fullName || prev.name,
+        email: partialFac.email || prev.email,
+        facultyProfile: mergedFac
+      };
+    });
+  };
+
+  const linkFacultyProfile = (faculty: Faculty) => {
+    setUser(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        facultyProfile: faculty,
+        departmentId: faculty.departmentId
+      };
+    });
+  };
+
+  const linkStudentProfile = (student: Student) => {
+    setUser(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        studentProfile: student,
+        departmentId: student.homeDepartmentId
+      };
+    });
+  };
+
+  const unlinkProfile = () => {
+    logout();
+  };
+
+  const loginWithEmail = async (email: string, pass: string) => {
+    if (!isSupabaseConfigured || !supabase) {
+      return { error: 'Database authentication unavailable.' };
+    }
+    setIsLoading(true);
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const { error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password: pass
+      });
+      if (error) {
+        return { error: error.message };
+      }
+      const { data } = await supabase.rpc('complete_supabase_jwt_login', {
+        p_device_fingerprint: getDeviceFingerprint()
+      });
+      if (!data?.success || !data.session_token) {
+        return { error: data?.error || 'Account is not linked to an active institutional profile.' };
+      }
+      setInMemoryErpSessionToken(data.session_token);
+      setUser(hydrateAuthUserFromRpc(data));
+      return {};
+    } catch (err: any) {
+      return { error: err?.message || 'Login failed.' };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const clearInactivityTimers = useCallback(() => {
+    if (warningTimerRef.current) {
+      clearTimeout(warningTimerRef.current);
+      warningTimerRef.current = null;
+    }
+    if (logoutTimerRef.current) {
+      clearTimeout(logoutTimerRef.current);
+      logoutTimerRef.current = null;
+    }
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+  }, []);
+
+  const performLogout = useCallback(async (timedOut = false, broadcast = true) => {
+    clearInactivityTimers();
+    isWarningOpenRef.current = false;
+    setSessionTimeoutWarning(false);
+    setSessionTimedOut(timedOut);
+
+    if (broadcast && broadcastChannelRef.current) {
+      try {
+        broadcastChannelRef.current.postMessage({ type: 'LOGOUT', timedOut });
+      } catch {
+        // ignore closed channel
+      }
+    }
+
     if (isSupabaseConfigured && supabase) {
       try {
+        await supabase.rpc('logout_erp_session');
+      } catch {
+        // ignore network errors during sign-out cleanup
+      }
+      try {
         await supabase.auth.signOut();
-      } catch (e) {
+      } catch {
         // ignore
       }
     }
+    try {
+      await firebaseSignOut(firebaseAuth);
+    } catch {
+      // ignore
+    }
+
+    setInMemoryErpSessionToken(null);
     setGoogleAuthUser(null);
-    localStorage.removeItem('college_dev_logged_in');
-    localStorage.removeItem('college_dev_role');
-    localStorage.removeItem('nss_auth_user');
     setUser(null);
-  };
+    if (typeof window !== 'undefined') {
+      try {
+        LEGACY_AUTH_STORAGE_KEYS.forEach(k => window.localStorage.removeItem(k));
+      } catch {
+        // ignore
+      }
+      window.dispatchEvent(new CustomEvent('nss-auth-logout'));
+    }
+  }, [clearInactivityTimers]);
+
+  const logout = useCallback(async () => {
+    await performLogout(false);
+  }, [performLogout]);
+
+  useEffect(() => {
+    logoutRef.current = () => performLogout(true);
+  }, [performLogout]);
+
+  const scheduleInactivityTimers = useCallback(
+    (baseTimestamp: number) => {
+      clearInactivityTimers();
+
+      const now = Date.now();
+      const elapsed = Math.max(0, now - baseTimestamp);
+      const remainingToLogout = SESSION_INACTIVITY_TIMEOUT_MS - elapsed;
+
+      if (remainingToLogout <= 0) {
+        void logoutRef.current();
+        return;
+      }
+
+      const startCountdownTicker = () => {
+        const updateRemaining = () => {
+          const msLeft = SESSION_INACTIVITY_TIMEOUT_MS - (Date.now() - lastActivityAtRef.current);
+          if (msLeft <= 0) {
+            setSessionTimeoutRemainingSeconds(0);
+            void logoutRef.current();
+            return;
+          }
+          setSessionTimeoutRemainingSeconds(Math.ceil(msLeft / 1000));
+        };
+
+        updateRemaining();
+        if (countdownIntervalRef.current) {
+          clearInterval(countdownIntervalRef.current);
+        }
+        countdownIntervalRef.current = setInterval(updateRemaining, 1000);
+      };
+
+      const remainingToWarning = SESSION_INACTIVITY_WARNING_MS - elapsed;
+      if (remainingToWarning <= 0) {
+        isWarningOpenRef.current = true;
+        setSessionTimeoutWarning(true);
+        startCountdownTicker();
+      } else {
+        isWarningOpenRef.current = false;
+        setSessionTimeoutWarning(false);
+        warningTimerRef.current = setTimeout(() => {
+          isWarningOpenRef.current = true;
+          setSessionTimeoutWarning(true);
+          startCountdownTicker();
+        }, remainingToWarning);
+      }
+
+      logoutTimerRef.current = setTimeout(() => {
+        void logoutRef.current();
+      }, remainingToLogout);
+    },
+    [clearInactivityTimers]
+  );
+
+  const extendSession = useCallback(() => {
+    const now = Date.now();
+    lastActivityAtRef.current = now;
+    lastRecordedActivityAtRef.current = now;
+    isWarningOpenRef.current = false;
+    setSessionTimeoutWarning(false);
+    setSessionTimeoutRemainingSeconds(
+      Math.ceil((SESSION_INACTIVITY_TIMEOUT_MS - SESSION_INACTIVITY_WARNING_MS) / 1000)
+    );
+
+    if (broadcastChannelRef.current) {
+      try {
+        broadcastChannelRef.current.postMessage({ type: 'ACTIVITY', at: now });
+      } catch {
+        // ignore
+      }
+    }
+
+    scheduleInactivityTimers(now);
+  }, [scheduleInactivityTimers]);
+
+  const dismissSessionTimedOutNotice = useCallback(() => {
+    setSessionTimedOut(false);
+  }, []);
+
+  const activeUserId = user?.id || null;
+
+  // Enforce automatic 30-minute inactivity timeout with 25-minute warning modal
+  useEffect(() => {
+    if (!activeUserId) {
+      clearInactivityTimers();
+      isWarningOpenRef.current = false;
+      setSessionTimeoutWarning(false);
+      return;
+    }
+
+    setSessionTimedOut(false);
+    const initialTime = Date.now();
+    lastActivityAtRef.current = initialTime;
+    lastRecordedActivityAtRef.current = initialTime;
+    scheduleInactivityTimers(initialTime);
+
+    let channel: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        channel = new BroadcastChannel('nss_erp_session_activity');
+        broadcastChannelRef.current = channel;
+        channel.onmessage = (event: MessageEvent) => {
+          const msg = event.data;
+          if (!msg || typeof msg !== 'object') return;
+          if (msg.type === 'ACTIVITY' && typeof msg.at === 'number') {
+            if (msg.at > lastActivityAtRef.current) {
+              lastActivityAtRef.current = msg.at;
+              lastRecordedActivityAtRef.current = msg.at;
+              isWarningOpenRef.current = false;
+              setSessionTimeoutWarning(false);
+              scheduleInactivityTimers(msg.at);
+            }
+          } else if (msg.type === 'LOGOUT') {
+            void performLogout(Boolean(msg.timedOut), false);
+          }
+        };
+      } catch {
+        channel = null;
+      }
+    }
+
+    const handleUserActivity = () => {
+      // Once the 25-minute warning modal is displayed, require explicit action to extend the session
+      if (isWarningOpenRef.current) return;
+
+      const now = Date.now();
+      if (now - lastRecordedActivityAtRef.current < 1000) return;
+
+      lastActivityAtRef.current = now;
+      lastRecordedActivityAtRef.current = now;
+
+      if (channel) {
+        try {
+          channel.postMessage({ type: 'ACTIVITY', at: now });
+        } catch {
+          // ignore
+        }
+      }
+
+      scheduleInactivityTimers(now);
+    };
+
+    const handleVisibilityOrFocus = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      scheduleInactivityTimers(lastActivityAtRef.current);
+    };
+
+    if (typeof window !== 'undefined') {
+      ACTIVITY_EVENTS.forEach(evt => {
+        window.addEventListener(evt, handleUserActivity, { passive: true });
+      });
+      window.addEventListener('focus', handleVisibilityOrFocus);
+      document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    }
+
+    return () => {
+      clearInactivityTimers();
+      if (typeof window !== 'undefined') {
+        ACTIVITY_EVENTS.forEach(evt => {
+          window.removeEventListener(evt, handleUserActivity);
+        });
+        window.removeEventListener('focus', handleVisibilityOrFocus);
+        document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      }
+      if (channel) {
+        try {
+          channel.close();
+        } catch {
+          // ignore
+        }
+        if (broadcastChannelRef.current === channel) {
+          broadcastChannelRef.current = null;
+        }
+      }
+    };
+  }, [activeUserId, clearInactivityTimers, performLogout, scheduleInactivityTimers]);
 
   return (
     <AuthContext.Provider
       value={{
         user,
         activeRole: user?.activeRole || 'TEACHER',
-        availableRoles: user?.roles || ['TEACHER'],
-        isAuthenticated: !!user,
+        availableRoles: user?.roles || [],
+        isAuthenticated: Boolean(user),
         isLoading,
         isDevAuthMode: DEV_AUTH_MODE,
         googleAuthUser,
+        getBootstrapStatus,
+        claimInitialAdmin,
         switchRole,
-        loginAsDemoRole,
-        loginAsDemoUser: loginAsDemoRole,
-        loginAsStudent,
         loginWithStudentCredentials,
         loginWithStaffCredentials,
         signInWithGoogle,
         linkGoogleAccountToStudent,
         linkGoogleAccountToStaff,
         unlinkGoogleAccount,
+        changeOwnCredentials,
+        adminResetUserPassword,
         updateCurrentUser,
         updateFacultyProfile,
         linkFacultyProfile,
@@ -1028,10 +1077,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         unlinkProfile,
         loginWithEmail,
         logout,
-        isLiveSupabase: isSupabaseConfigured
+        isLiveSupabase: isSupabaseConfigured,
+        sessionTimeoutWarning,
+        sessionTimeoutRemainingSeconds,
+        sessionTimedOut,
+        extendSession,
+        dismissSessionTimedOutNotice
       }}
     >
       {children}
+
+      <SessionTimeoutModal
+        isOpen={Boolean(user) && sessionTimeoutWarning}
+        remainingSeconds={sessionTimeoutRemainingSeconds}
+        onStaySignedIn={extendSession}
+        onLogoutNow={() => {
+          void logout();
+        }}
+      />
+
+      {!user && sessionTimedOut && (
+        <div
+          className="fixed bottom-4 right-4 z-90 max-w-sm bg-slate-900 text-white border border-amber-500/50 rounded-2xl shadow-2xl p-4 flex items-start gap-3"
+          role="status"
+        >
+          <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5">
+            <Clock className="w-4 h-4" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-bold text-amber-300 uppercase tracking-wider">Session Expired</p>
+            <p className="text-xs text-slate-200 mt-1 leading-relaxed">
+              You were automatically logged out after 30 minutes of inactivity. Please sign in again to continue.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={dismissSessionTimedOutNotice}
+            aria-label="Dismiss session timeout notice"
+            className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </AuthContext.Provider>
   );
 };

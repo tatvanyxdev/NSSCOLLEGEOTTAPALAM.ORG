@@ -154,6 +154,7 @@ interface CollegeDataContextType {
   courses: Course[];
   addCourse: (course: Omit<Course, 'id'>) => Promise<{ success: boolean; data?: Course; error?: string }>;
   updateCourse: (id: string, course: Partial<Course>) => Promise<{ success: boolean; error?: string }>;
+  deleteCourse: (id: string) => Promise<{ success: boolean; error?: string }>;
 
   courseOfferings: CourseOffering[];
   addCourseOffering: (off: Omit<CourseOffering, 'id'>) => Promise<{ success: boolean; data?: CourseOffering; error?: string }>;
@@ -369,33 +370,26 @@ const CollegeDataContext = createContext<CollegeDataContextType | undefined>(und
 
 const STORAGE_PREFIX = 'nss_erp_';
 
-export const getFacultyCredentialOverrides = (): Record<string, { username?: string; password?: string }> => {
-  try {
-    if (typeof window === 'undefined') return {};
-    const raw = localStorage.getItem(`${STORAGE_PREFIX}faculty_credentials`);
-    return raw ? JSON.parse(raw) : {};
-  } catch (e) {
-    return {};
-  }
+const randomDigits = (length: number): string => {
+  const buf = new Uint32Array(length);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, v => String(v % 10)).join('');
 };
 
-export const saveFacultyCredentialOverride = (id: string, username?: string, password?: string, altKeys: string[] = []) => {
-  try {
-    if (typeof window === 'undefined') return;
-    const creds = getFacultyCredentialOverrides();
-    const entry = {
-      ...(creds[id] || {}),
-      ...(username ? { username } : {}),
-      ...(password ? { password } : {})
-    };
-    creds[id] = entry;
-    altKeys.forEach(k => {
-      if (k && k.trim()) creds[k] = entry;
-    });
-    localStorage.setItem(`${STORAGE_PREFIX}faculty_credentials`, JSON.stringify(creds));
-  } catch (e) {
-    console.error('Error saving faculty credential override:', e);
-  }
+const generateSecureTempPassword = (): string => {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const all = upper + lower + digits;
+  const buf = new Uint32Array(10);
+  crypto.getRandomValues(buf);
+  return [
+    upper[buf[0] % upper.length],
+    lower[buf[1] % lower.length],
+    digits[buf[2] % digits.length],
+    '#',
+    ...Array.from(buf.slice(3), v => all[v % all.length])
+  ].join('');
 };
 
 // Purge legacy demo / fake data from localStorage so the app starts with real data only
@@ -448,18 +442,11 @@ if (typeof window !== 'undefined') {
     ];
     keysToPurge.forEach(k => localStorage.removeItem(k));
     localStorage.setItem(cleanupKey, 'true');
-
-    try {
-      firebaseSyncService.deleteSpecialAttendanceEvent('spec-event-union-pending').catch(() => {});
-      firebaseSyncService.deleteSpecialAttendanceEvent('spec-event-union-approved').catch(() => {});
-    } catch (e) {
-      // ignore
-    }
   }
 }
 
 export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user, activeRole } = useAuth();
+  const { user, activeRole, updateFacultyProfile } = useAuth();
 
   // Initialize state from LocalStorage or initial seeded data
   const [settings, setSettings] = useState<SystemSettings>(() => {
@@ -520,19 +507,12 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (saved) {
       try {
         const parsed: Student[] = JSON.parse(saved);
-        // Normalize any students to ensure username is University Register Number and default password is DOB + Mobile last 2 digits
         return parsed.map(s => {
-          let updated = { ...s };
+          const updated = { ...s, password: '' };
           if (!updated.username && updated.universityRegisterNumber) {
             updated.username = updated.universityRegisterNumber.toUpperCase();
           } else if (updated.username && updated.username.startsWith('stu') && updated.universityRegisterNumber) {
             updated.username = updated.universityRegisterNumber.toUpperCase();
-          }
-          if ((!updated.password || updated.password === 'Nss2026!') && updated.dateOfBirth && (updated.mobileNumber || updated.phone || updated.phoneNumber)) {
-            const defPass = generateDefaultStudentPassword(updated.dateOfBirth, updated.mobileNumber || updated.phone || updated.phoneNumber);
-            if (defPass) {
-              updated.password = defPass;
-            }
           }
           return updated;
         });
@@ -556,15 +536,11 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [faculty, setFaculty] = useState<Faculty[]>(() => {
     const saved = localStorage.getItem(`${STORAGE_PREFIX}faculty`);
     const base: Faculty[] = saved ? JSON.parse(saved) : initialFaculty;
-    const creds = getFacultyCredentialOverrides();
-    return base.map(f => {
-      const override = creds[f.id] || creds[f.employeeId || ''] || creds[f.email || ''];
-      return {
-        ...f,
-        username: override?.username || f.username || '',
-        password: override?.password || f.password || ''
-      };
-    });
+    return base.map(f => ({
+      ...f,
+      username: f.username || '',
+      password: ''
+    }));
   });
 
   const [facultyAssignments, setFacultyAssignments] = useState<FacultyCourseAssignment[]>(() => {
@@ -1015,7 +991,6 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
           errorCount++;
         } else if (facRes.value.data && facRes.value.data.length > 0) {
           const remoteFaculty = facRes.value.data.filter(f => !f.id.includes('demo') && !f.id.includes('sample'));
-          const creds = getFacultyCredentialOverrides();
           setFaculty(prevLocal => {
             const merged = remoteFaculty.map(rf => {
               const localMatch = prevLocal.find(
@@ -1024,27 +999,20 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
                   (l.email && rf.email && l.email.toLowerCase() === rf.email.toLowerCase()) ||
                   (l.employeeCode && rf.employeeCode && l.employeeCode.toUpperCase() === rf.employeeCode.toUpperCase())
               );
-              const override =
-                creds[rf.id] ||
-                creds[localMatch?.id || ''] ||
-                (localMatch?.employeeCode ? creds[localMatch.employeeCode] : undefined) ||
-                (localMatch?.email ? creds[localMatch.email] : undefined) ||
-                (rf.email ? creds[rf.email] : undefined);
-
-              const finalUsername = override?.username || localMatch?.username || rf.username || '';
-              const finalPassword = override?.password || localMatch?.password || rf.password || '';
 
               return {
                 ...rf,
                 ...(localMatch || {}),
-                username: finalUsername,
-                password: finalPassword
+                username: rf.username || localMatch?.username || '',
+                password: ''
               };
             });
 
             // Preserve any non-demo locally added faculty members that are not yet in remote
             const remoteIds = new Set(remoteFaculty.map(rf => rf.id));
-            const localOnly = prevLocal.filter(l => !remoteIds.has(l.id) && !l.id.includes('demo') && !l.id.includes('sample'));
+            const localOnly = prevLocal
+              .filter(l => !remoteIds.has(l.id) && !l.id.includes('demo') && !l.id.includes('sample'))
+              .map(l => ({ ...l, password: '' }));
             return [...merged, ...localOnly];
           });
           health.faculty = 'ok';
@@ -1329,8 +1297,48 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   useEffect(() => {
     syncWithDatabase();
+  }, [user?.id]);
 
-    // Real-time synchronization with Firebase Firestore
+  useEffect(() => {
+    const handleAuthLogout = () => {
+      if (typeof window !== 'undefined') {
+        Object.keys(localStorage).forEach(k => {
+          if (k.startsWith(STORAGE_PREFIX) && k !== `${STORAGE_PREFIX}clean_production_purged_v12_nodemo`) {
+            localStorage.removeItem(k);
+          }
+        });
+      }
+      setStudents([]);
+      setFaculty([]);
+      setAttendanceRecords([]);
+      setClassSessions([]);
+      setCorrectionRequests([]);
+      setNotifications([]);
+      setAuditLogs([]);
+      setSpecialAttendanceEvents([]);
+      setSpecialAttendanceRecords([]);
+      setStudentCourseRegistrations([]);
+      setSemesterEnrollments([]);
+      setFacultyAssignments([]);
+      setFacultySubjectRequests([]);
+      setFacultyAssignmentHistory([]);
+      setSubstituteAssignments([]);
+      setDailyScheduleOverrides([]);
+    };
+
+    window.addEventListener('nss-auth-logout', handleAuthLogout);
+    return () => window.removeEventListener('nss-auth-logout', handleAuthLogout);
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id) {
+      pushNotificationService.stopFirestoreSync();
+      return;
+    }
+
+    pushNotificationService.startFirestoreSync();
+
+    // Real-time synchronization with Firebase Firestore for authenticated users
     const unsubAnnouncements = firebaseSyncService.subscribeAnnouncements((remoteAnnouncements) => {
       if (remoteAnnouncements && remoteAnnouncements.length > 0) {
         setAnnouncements(prev => {
@@ -1355,13 +1363,14 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return () => {
       unsubAnnouncements();
       unsubSpecial();
+      pushNotificationService.stopFirestoreSync();
     };
-  }, []);
+  }, [user?.id]);
 
   // Logging helper
   const addAuditLog = (action: string, entityType: string, entityId: string, newData?: any, oldData?: any) => {
     const newLog: AuditLog = {
-      id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      id: `log-${Date.now()}-${randomDigits(4)}`,
       actorName: user?.name || 'System User',
       actorRole: user?.activeRole || 'SUPER_ADMIN',
       action,
@@ -1582,6 +1591,58 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return { success: true };
   };
 
+  const deleteCourse = async (id: string): Promise<{ success: boolean; error?: string }> => {
+    const prevCourse = courses.find(c => c.id === id);
+    const { effectiveDepartmentId } = resolveActorContext();
+    const actorRole = activeRole || user?.activeRole;
+
+    if (!can(actorRole, 'courses', 'delete')) {
+      return { success: false, error: 'Unauthorized: You do not have permission to delete courses.' };
+    }
+    if (
+      actorRole === 'HOD' &&
+      !canManageDepartmentScope('HOD', effectiveDepartmentId, prevCourse?.departmentId)
+    ) {
+      return {
+        success: false,
+        error: 'Unauthorized: HODs can only delete courses belonging to their own department.'
+      };
+    }
+
+    const res = await courseService.deleteCourse(id);
+    if (!res.success) {
+      return { success: false, error: res.error?.message || 'Failed to delete course from database.' };
+    }
+
+    const removedOfferingIds = new Set(courseOfferings.filter(o => o.courseId === id).map(o => o.id));
+    const removedGroupIds = new Set(
+      courseGroups.filter(g => removedOfferingIds.has(g.courseOfferingId)).map(g => g.id)
+    );
+    const removedSessionIds = new Set(
+      classSessions
+        .filter(s => removedOfferingIds.has(s.courseOfferingId) || removedGroupIds.has(s.courseGroupId))
+        .map(s => s.id)
+    );
+
+    setCourses(prev => prev.filter(c => c.id !== id));
+    setCourseOfferings(prev => prev.filter(o => o.courseId !== id));
+    setCourseGroups(prev => prev.filter(g => !removedOfferingIds.has(g.courseOfferingId)));
+    setFacultyAssignments(prev =>
+      prev.filter(fa => !removedGroupIds.has(fa.courseGroupId) && !removedOfferingIds.has(fa.courseOfferingId || ''))
+    );
+    setStudentCourseRegistrations(prev =>
+      prev.filter(r => !removedOfferingIds.has(r.courseOfferingId) && !removedGroupIds.has(r.courseGroupId || ''))
+    );
+    setTimetableEntries(prev =>
+      prev.filter(t => !removedOfferingIds.has(t.courseOfferingId) && !removedGroupIds.has(t.courseGroupId))
+    );
+    setClassSessions(prev => prev.filter(s => !removedSessionIds.has(s.id)));
+    setAttendanceRecords(prev => prev.filter(a => !removedSessionIds.has(a.classSessionId)));
+
+    addAuditLog('DELETE_COURSE', 'COURSE', id, prevCourse);
+    return { success: true };
+  };
+
   // Admission Batches
   const updateAdmissionBatch = async (id: string, batch: Partial<AdmissionBatch>): Promise<{ success: boolean; error?: string }> => {
     const prevBatch = admissionBatches.find(b => b.id === id);
@@ -1644,12 +1705,12 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const addStudent = async (student: Omit<Student, 'id' | 'createdAt'>): Promise<{ success: boolean; data?: Student; error?: string }> => {
     // If username is not set, set to university register number
     const finalUsername = student.username?.trim() || student.universityRegisterNumber?.trim().toUpperCase() || `stu${Date.now().toString().slice(-4)}`;
-    
-    // Default password formula
-    let finalPassword = student.password;
-    if (!finalPassword || finalPassword === 'Nss2026!') {
+
+    // Compute default password only from DOB + Mobile when no custom password was supplied
+    let finalPassword = student.password?.trim() || '';
+    if (!finalPassword) {
       const computedPass = generateDefaultStudentPassword(student.dateOfBirth, student.mobileNumber || student.phone || student.phoneNumber);
-      finalPassword = computedPass || finalPassword || 'Nss2026!';
+      finalPassword = computedPass || generateSecureTempPassword();
     }
 
     const payloadStudent: Omit<Student, 'id'> = {
@@ -1665,7 +1726,16 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       return { success: false, error: res.error?.message || 'Failed to insert student into Supabase.' };
     }
 
-    const createdStudent = res.data;
+    const createdStudent: Student = {
+      ...res.data,
+      password: '',
+      currentSemester: res.data.currentSemester || payloadStudent.currentSemester || 1,
+      yearOfStudy:
+        payloadStudent.yearOfStudy ||
+        res.data.yearOfStudy ||
+        Math.ceil((res.data.currentSemester || payloadStudent.currentSemester || 1) / 2),
+      admissionBatch: res.data.admissionBatch || payloadStudent.admissionBatch || ''
+    };
     setStudents(prev => [createdStudent, ...prev]);
 
     // Automatically create semester 1 enrollment
@@ -1680,7 +1750,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setSemesterEnrollments(prev => [...prev, newEnrollment]);
     academicService.createSemesterEnrollment(newEnrollment);
 
-    addAuditLog('CREATE_STUDENT', 'STUDENT', createdStudent.id, createdStudent);
+    addAuditLog('CREATE_STUDENT', 'STUDENT', createdStudent.id, { ...createdStudent, password: '' });
     return { success: true, data: createdStudent };
   };
 
@@ -1688,24 +1758,23 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const prevStudent = students.find(s => s.id === id);
     if (!prevStudent) return { success: false, error: 'Student not found.' };
 
-    const updated = { ...prevStudent, ...student };
-    if (student.universityRegisterNumber && (!updated.username || updated.username === prevStudent.universityRegisterNumber)) {
-      updated.username = student.universityRegisterNumber.trim().toUpperCase();
-    }
-    if ((student.dateOfBirth || student.mobileNumber) && (!updated.password || updated.password === 'Nss2026!' || updated.password.length === 10)) {
-      const computedPass = generateDefaultStudentPassword(updated.dateOfBirth, updated.mobileNumber || updated.phone || updated.phoneNumber);
-      if (computedPass) {
-        updated.password = computedPass;
-      }
+    const { password: incomingPassword, ...safePatch } = student;
+    const updated: Student = { ...prevStudent, ...safePatch, password: '' };
+    if (safePatch.universityRegisterNumber && (!updated.username || updated.username === prevStudent.universityRegisterNumber)) {
+      updated.username = safePatch.universityRegisterNumber.trim().toUpperCase();
     }
 
-    const res = await studentService.updateStudent(id, updated);
+    const dbPayload: Partial<Student> = incomingPassword?.trim()
+      ? { ...updated, password: incomingPassword.trim() }
+      : updated;
+
+    const res = await studentService.updateStudent(id, dbPayload);
     if (!res.success) {
       return { success: false, error: res.error?.message || 'Failed to update student in database.' };
     }
 
     setStudents(prev => prev.map(s => (s.id === id ? updated : s)));
-    addAuditLog('UPDATE_STUDENT', 'STUDENT', id, updated, prevStudent);
+    addAuditLog('UPDATE_STUDENT', 'STUDENT', id, { ...updated, password: '' }, { ...prevStudent, password: '' });
     return { success: true };
   };
 
@@ -1723,14 +1792,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       addAuditLog('DELETE_STUDENT', 'STUDENT', id);
       return { success: true };
     } catch (err: any) {
-      console.warn('Fallback delete student:', err?.message || err);
-      // Ensure local state is updated even if remote threw an exception
-      setStudents(prev => prev.filter(s => s.id !== id));
-      setStudentCourseRegistrations(prev => prev.filter(r => r.studentId !== id));
-      setAttendanceRecords(prev => prev.filter(a => a.studentId !== id));
-      setSemesterEnrollments(prev => prev.filter(e => e.studentId !== id));
-      setCorrectionRequests(prev => prev.filter(c => c.studentId !== id));
-      return { success: true };
+      return { success: false, error: err?.message || 'Failed to delete student from database.' };
     }
   };
 
@@ -1786,81 +1848,36 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (res.error || !res.data) {
       return { success: false, error: res.error?.message || 'Failed to insert faculty member into database.' };
     }
-    const created = res.data;
-    if (fac.username || fac.password) {
-      saveFacultyCredentialOverride(
-        created.id,
-        fac.username,
-        fac.password,
-        [created.employeeCode || '', created.employeeId || '', created.email || '']
-      );
-    }
+    const created: Faculty = { ...res.data, password: '' };
     setFaculty(prev => [...prev, created]);
-    addAuditLog('CREATE_FACULTY', 'FACULTY', created.id, created);
+    addAuditLog('CREATE_FACULTY', 'FACULTY', created.id, { ...created, password: '' });
     return { success: true, data: created };
   };
 
   const updateFaculty = async (id: string, fac: Partial<Faculty>): Promise<{ success: boolean; error?: string }> => {
     const prevFac = faculty.find(f => f.id === id);
+    const { password: incomingPassword, ...safeFacPatch } = fac;
+    const dbPayload: Partial<Faculty> = incomingPassword?.trim()
+      ? { ...safeFacPatch, password: incomingPassword.trim() }
+      : safeFacPatch;
 
-    // Persist credentials override so background sync can never overwrite updated username or password
-    if (fac.username || fac.password) {
-      saveFacultyCredentialOverride(
-        id,
-        fac.username,
-        fac.password,
-        [
-          prevFac?.employeeCode || '',
-          prevFac?.employeeId || '',
-          prevFac?.email || '',
-          fac.email || ''
-        ]
-      );
+    const res = await facultyService.updateFaculty(id, dbPayload);
+    if (!res.success) {
+      return { success: false, error: res.error?.message || 'Failed to update faculty member in database.' };
     }
 
-    // Update in-memory state immediately
-    setFaculty(prev => prev.map(f => (f.id === id ? { ...f, ...fac } : f)));
+    const sanitizedPatch = { ...safeFacPatch, password: '' };
+    setFaculty(prev => prev.map(f => (f.id === id ? { ...f, ...sanitizedPatch } : f)));
 
-    // Synchronize active logged-in user profile in localStorage and dispatch event if active user is this faculty
-    try {
-      if (typeof window !== 'undefined') {
-        const savedAuthUser = localStorage.getItem('nss_auth_user');
-        if (savedAuthUser) {
-          const parsed = JSON.parse(savedAuthUser);
-          const isCurrentStaff =
-            parsed.id === id ||
-            parsed.facultyProfile?.id === id ||
-            (parsed.email && prevFac?.email && parsed.email.toLowerCase() === prevFac.email.toLowerCase());
-
-          if (isCurrentStaff) {
-            const mergedFac: Faculty = {
-              ...(parsed.facultyProfile || prevFac || {}),
-              ...fac,
-              id: parsed.facultyProfile?.id || id
-            } as Faculty;
-
-            const updatedAuth = {
-              ...parsed,
-              name: fac.fullName || parsed.name,
-              email: fac.email || parsed.email,
-              facultyProfile: mergedFac
-            };
-            localStorage.setItem('nss_auth_user', JSON.stringify(updatedAuth));
-            window.dispatchEvent(new CustomEvent('nss-auth-update', { detail: updatedAuth }));
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('Could not sync auth user after faculty update:', e);
+    const isCurrentStaff =
+      user?.id === id ||
+      user?.facultyProfile?.id === id ||
+      (user?.email && prevFac?.email && user.email.toLowerCase() === prevFac.email.toLowerCase());
+    if (isCurrentStaff) {
+      updateFacultyProfile(sanitizedPatch);
     }
 
-    // Call service to update Supabase database in background
-    const res = await facultyService.updateFaculty(id, fac);
-    if (!res.success && res.error) {
-      console.warn('Database remote update warning for faculty (local state preserved):', res.error);
-    }
-
-    addAuditLog('UPDATE_FACULTY', 'FACULTY', id, { ...prevFac, ...fac }, prevFac);
+    addAuditLog('UPDATE_FACULTY', 'FACULTY', id, { ...prevFac, ...sanitizedPatch, password: '' }, { ...prevFac, password: '' });
     return { success: true };
   };
 
@@ -1885,17 +1902,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       addAuditLog('DELETE_FACULTY', 'FACULTY', id);
       return { success: true };
     } catch (err: any) {
-      console.warn('Fallback delete faculty:', err?.message || err);
-      setFaculty(prev => prev.filter(f => f.id !== id));
-      setFacultyAssignments(prev => prev.filter(fa => fa.facultyId !== id));
-      setDepartments(prev =>
-        prev.map(d => (d.hodFacultyId === id ? { ...d, hodFacultyId: undefined } : d))
-      );
-      setTimetableEntries(prev => prev.filter(t => t.facultyId !== id));
-      setSubstituteAssignments(prev =>
-        prev.filter(sa => sa.facultyId !== id && sa.substituteFacultyId !== id)
-      );
-      return { success: true };
+      return { success: false, error: err?.message || 'Failed to delete faculty member from database.' };
     }
   };
 
@@ -1957,7 +1964,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     let code = req.proposedCourseCode?.trim() || null;
     let isProvisional = req.isProvisional || false;
     if (!code && !req.existingCourseId) {
-      const randNum = Math.floor(1000 + Math.random() * 9000);
+      const randNum = randomDigits(4);
       code = `TEMP-2026-${randNum}`;
       isProvisional = true;
     }
@@ -2050,7 +2057,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const targetFacultyId = approvalOptions?.targetFacultyId || existingReq.requestedByFacultyId || existingReq.requestedBy;
       const deptId = approvalOptions?.departmentId || existingReq.departmentId;
       const courseName = approvalOptions?.courseName || existingReq.courseName;
-      const courseCode = approvalOptions?.proposedCourseCode || existingReq.proposedCourseCode || `TEMP-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+      const courseCode = approvalOptions?.proposedCourseCode || existingReq.proposedCourseCode || `TEMP-2026-${randomDigits(4)}`;
 
       // 1. Course ID
       let resolvedCourseId = approvalOptions?.courseId || existingReq.existingCourseId;
@@ -2406,11 +2413,11 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       return { success: false, error: `A faculty member with email ${teacherData.email} already exists.` };
     }
 
-    // Generate unique username
+    // Generate unique username & CSPRNG temporary password
     const nameSlug = teacherData.fullName.toLowerCase().replace(/[^a-z]/g, '').slice(0, 8);
-    const randSuffix = Math.floor(100 + Math.random() * 900);
+    const randSuffix = randomDigits(3);
     const generatedUsername = `nss_${nameSlug}_${randSuffix}`;
-    const generatedTempPassword = 'Staff2026!';
+    const generatedTempPassword = generateSecureTempPassword();
 
     const newFacultyObj: Omit<Faculty, 'id'> = {
       fullName: teacherData.fullName.trim(),
@@ -2432,7 +2439,10 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
 
     const res = await facultyService.createFaculty(newFacultyObj);
-    const created: Faculty = res.data || { ...newFacultyObj, id: `fac-${Date.now()}` };
+    if (res.error || !res.data) {
+      return { success: false, error: res.error?.message || 'Failed to enroll teacher in database.' };
+    }
+    const created: Faculty = { ...res.data, password: '' };
 
     setFaculty(prev => [...prev, created]);
     addAuditLog('INVITE_TEACHER', 'FACULTY', created.id, { ...created, password: '[PROTECTED]' });
@@ -3185,7 +3195,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       } else {
         createdList.push({
           ...payload,
-          id: `corr-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          id: `corr-${Date.now()}-${randomDigits(4)}`,
           status: 'PENDING',
           requestedDate: timestamp
         });
@@ -3698,7 +3708,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // Analytical Calculation for Student FYUGP Dual Attendance (Department Policy Aware)
   const getStudentAttendanceSummary = (studentId: string): DualAttendanceSummary => {
-    const summary = calculateStudentDualAttendance({
+    return calculateStudentDualAttendance({
       studentId,
       students,
       departments,
@@ -3717,29 +3727,6 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
       specialAttendanceEvents,
       specialAttendanceRecords
     });
-
-    // Keep Firebase lightweight student ledger warm for ultra-low read quota usage on free plans
-    const targetStudent = students.find(s => s.id === studentId);
-    if (targetStudent) {
-      firebaseSyncService.syncStudentAttendanceSummary({
-        studentId,
-        rollNumber: targetStudent.rollNumber,
-        admissionNumber: targetStudent.admissionNumber,
-        fullName: targetStudent.fullName,
-        regularPercentage: summary.regularPercentage,
-        consolidatedPercentage: summary.overallPercentage,
-        hourWisePercentage: summary.hourWisePercentage,
-        attendancePolicy: summary.policy,
-        totalConducted: summary.totalConducted,
-        totalPresent: summary.totalPresent,
-        totalWorkingDays: summary.totalWorkingDays,
-        awardedDays: summary.awardedDays,
-        specialDutyApprovedCount: summary.specialDutyApprovedCount,
-        specialDutyPendingCount: summary.specialDutyPendingCount
-      }).catch(() => {});
-    }
-
-    return summary;
   };
 
   // Helper: Retrieve all registered students for a Course Group (demonstrating cross-major cohort)
@@ -3885,6 +3872,10 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const resetToDefaultData = async (wipeSupabaseTestData = false) => {
+    if (activeRole !== 'SUPER_ADMIN') {
+      console.warn('Unauthorized system reset attempt blocked.');
+      return;
+    }
     // 1. Wipe all local storage keys completely
     try {
       localStorage.clear();
@@ -3977,6 +3968,7 @@ export const CollegeDataProvider: React.FC<{ children: React.ReactNode }> = ({ c
         courses,
         addCourse,
         updateCourse,
+        deleteCourse,
         courseOfferings,
         addCourseOffering,
         updateCourseOffering,

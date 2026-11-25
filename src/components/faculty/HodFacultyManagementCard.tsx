@@ -23,6 +23,12 @@ import {
   Send
 } from 'lucide-react';
 
+function randomDigits(length: number): string {
+  const bytes = new Uint32Array(length);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => String(b % 10)).join('');
+}
+
 interface HodFacultyManagementCardProps {
   onNavigateToRequests?: () => void;
 }
@@ -185,7 +191,7 @@ export const HodFacultyManagementCard: React.FC<HodFacultyManagementCardProps> =
     try {
       const res = await inviteOrEnrollTeacher({
         fullName: fullName.trim(),
-        employeeCode: employeeCode.trim().toUpperCase() || `PEN-2026-${Math.floor(100 + Math.random() * 900)}`,
+        employeeCode: employeeCode.trim().toUpperCase() || `PEN-2026-${randomDigits(3)}`,
         departmentId: assignedDept,
         email: email.trim().toLowerCase(),
         phone: phone.trim() || '+91 94470 00000',
@@ -202,7 +208,7 @@ export const HodFacultyManagementCard: React.FC<HodFacultyManagementCardProps> =
 
       setCreatedTeacherInfo({
         teacher: res.data,
-        tempPass: res.tempPassword || 'Staff2026!'
+        tempPass: res.tempPassword || ''
       });
 
       // Clear fields
@@ -607,7 +613,7 @@ export const HodFacultyManagementCard: React.FC<HodFacultyManagementCardProps> =
                       <button
                         onClick={() =>
                           handleCopyCredentials(
-                            `Teacher: ${f.fullName}\nUsername: ${f.username || f.email.split('@')[0]}\nPassword: ${f.password || 'Staff2026!'}\nEmail: ${f.email}`,
+                            `Teacher: ${f.fullName}\nUsername: ${f.username || f.email.split('@')[0]}\nEmail: ${f.email}\nPassword: Protected (reset via Super Admin Credentials Directory)\nPortal URL: ${window.location.origin}`,
                             f.id
                           )
                         }
@@ -659,7 +665,7 @@ export const HodFacultyManagementCard: React.FC<HodFacultyManagementCardProps> =
                       <button
                         onClick={() =>
                           handleCopyCredentials(
-                            `NSS College Ottapalam Portal Activation\nTeacher: ${inv.fullName}\nUsername: ${inv.username || inv.email.split('@')[0]}\nTemporary Password: ${inv.password || 'Staff2026!'}\nLogin URL: ${window.location.origin}`,
+                            `NSS College Ottapalam Portal Activation\nTeacher: ${inv.fullName}\nUsername: ${inv.username || inv.email.split('@')[0]}\nEmail: ${inv.email}\nPassword: Protected (set via first-login reset or Super Admin)\nLogin URL: ${window.location.origin}`,
                             `invite-${inv.id}`
                           )
                         }

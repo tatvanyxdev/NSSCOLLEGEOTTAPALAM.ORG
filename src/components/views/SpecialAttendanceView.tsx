@@ -949,7 +949,11 @@ export const SpecialAttendanceView: React.FC = () => {
                             <button
                               onClick={() => {
                                 setApprovingEvent(event);
-                                setPrincipalOrderNumber(`NSS/PRIN/ATT/${new Date().getFullYear()}/${Math.floor(100 + Math.random() * 900)}`);
+                                const buf = new Uint32Array(1);
+                                if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+                                  crypto.getRandomValues(buf);
+                                }
+                                setPrincipalOrderNumber(`NSS/PRIN/ATT/${new Date().getFullYear()}/${100 + (buf[0] % 900)}`);
                                 setPrincipalOrderRemarks('Sanctioned under Calicut University Ordinance Rule 14. Duty attendance consolidated into student attendance register.');
                               }}
                               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"

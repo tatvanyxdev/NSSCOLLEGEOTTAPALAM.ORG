@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { useCollegeData, getFacultyCredentialOverrides } from '../../contexts/CollegeDataContext';
+import { useCollegeData } from '../../contexts/CollegeDataContext';
 import { Modal } from '../common/UIComponents';
 import {
   checkStaffPasswordRules,
@@ -51,9 +51,9 @@ interface UnifiedCredentialRow {
   roles: UserRole[];
   primaryUsername: string;
   acceptedIdentifiers: string[];
-  passwordDisplay: string;
-  passwordSource: 'MASTER' | 'SAVED' | 'AUTO_DOB_MOBILE' | 'PORTAL_FALLBACK';
-  fallbackNote?: string;
+  securityStatus: string;
+  googleLinked: boolean;
+  authNote?: string;
   statusLabel: string;
   editable: boolean;
   facultyRef?: Faculty;
@@ -91,8 +91,15 @@ function sanitizeCsvCell(value: unknown): string {
   return `"${neutralized.replace(/"/g, '""')}"`;
 }
 
+function generateSecureTempPassword(length = 10): string {
+  const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$';
+  const bytes = new Uint32Array(length);
+  crypto.getRandomValues(bytes);
+  return 'Nss#' + Array.from(bytes, b => charset[b % charset.length]).join('');
+}
+
 export const UserCredentialsView: React.FC = () => {
-  const { activeRole } = useAuth();
+  const { activeRole, user, adminResetUserPassword } = useAuth();
   const {
     faculty,
     students,
@@ -105,16 +112,15 @@ export const UserCredentialsView: React.FC = () => {
   const [activeCategory, setActiveCategory] = useState<CredentialCategory>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [deptFilter, setDeptFilter] = useState<string>('ALL');
-  const [showAllPasswords, setShowAllPasswords] = useState(false);
-  const [revealedRows, setRevealedRows] = useState<Record<string, boolean>>({});
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [pageBanner, setPageBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Edit Modal State
+  // Edit / Reset Modal State
   const [editingRow, setEditingRow] = useState<UnifiedCredentialRow | null>(null);
   const [editUsername, setEditUsername] = useState('');
   const [editPassword, setEditPassword] = useState('');
-  const [showEditPassword, setShowEditPassword] = useState(true);
+  const [forceChangeOnLogin, setForceChangeOnLogin] = useState(true);
+  const [showEditPassword, setShowEditPassword] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
@@ -130,62 +136,39 @@ export const UserCredentialsView: React.FC = () => {
     return map;
   }, [programmes]);
 
-  // Build unified directory strictly when Super Admin is active
+  // Build unified directory strictly when Super Admin is active (never displays plaintext passwords)
   const allRows = useMemo<UnifiedCredentialRow[]>(() => {
     if (activeRole !== 'SUPER_ADMIN') return [];
 
     const rows: UnifiedCredentialRow[] = [];
 
-    // 1. Master System Accounts (defined in AuthContext)
-    rows.push({
-      rowKey: 'master-super-admin',
-      sourceType: 'MASTER',
-      sourceId: 'super-admin-master',
-      displayName: 'System Super Administrator',
-      subtitle: 'Root System Control · Google Sign-In: admin@nssce.ac.in, tatvanyxdev@gmail.com, superadmin@nssce.ac.in',
-      departmentLabel: 'System Master Console',
-      roles: ['SUPER_ADMIN', 'PRINCIPAL', 'HOD', 'TEACHER'],
-      primaryUsername: 'admin',
-      acceptedIdentifiers: ['admin', 'superadmin', 'admin@nssce.ac.in'],
-      passwordDisplay: 'Admin2026!',
-      passwordSource: 'MASTER',
-      fallbackNote: 'Also accepts Nss2026! or Admin@2026',
-      statusLabel: 'MASTER KEY',
-      editable: false
-    });
-
-    rows.push({
-      rowKey: 'master-principal',
-      sourceType: 'MASTER',
-      sourceId: 'principal-master',
-      displayName: 'Office of the Principal (Master)',
-      subtitle: 'Institutional Executive Master · Can also log in with Google Sign-In using principal@nssce.ac.in',
-      departmentLabel: 'Principal Office',
-      roles: ['PRINCIPAL', 'TEACHER'],
-      primaryUsername: 'principal',
-      acceptedIdentifiers: ['principal', 'principal@nssce.ac.in'],
-      passwordDisplay: 'Principal2026!',
-      passwordSource: 'MASTER',
-      fallbackNote: 'Also accepts Nss2026! or Principal@2026',
-      statusLabel: 'MASTER KEY',
-      editable: false
-    });
+    // 1. Authenticated Super Administrator Profile (DB-backed)
+    if (user) {
+      rows.push({
+        rowKey: `master-${user.id}`,
+        sourceType: 'MASTER',
+        sourceId: user.id,
+        displayName: user.name || 'System Super Administrator',
+        subtitle: `Verified Super Admin · ${user.email || 'Institutional Account'}`,
+        departmentLabel: 'System Master Console',
+        roles: user.roles?.length ? user.roles : ['SUPER_ADMIN'],
+        primaryUsername: user.username || user.email || 'admin',
+        acceptedIdentifiers: Array.from(new Set([user.username, user.email].filter(Boolean) as string[])),
+        securityStatus: 'Bcrypt + Session Protected',
+        googleLinked: Boolean(user.email),
+        authNote: 'Managed via cryptographic session and self-service password rotation',
+        statusLabel: 'ACTIVE',
+        editable: false
+      });
+    }
 
     // 2. Faculty & Staff Accounts
-    const localOverrides = getFacultyCredentialOverrides();
     const sortedFaculty = [...faculty].sort((a, b) =>
       (a.fullName || '').localeCompare(b.fullName || '')
     );
 
     sortedFaculty.forEach(f => {
-      const override =
-        localOverrides[f.id] ||
-        (f.employeeCode ? localOverrides[f.employeeCode] : undefined) ||
-        (f.employeeId ? localOverrides[f.employeeId] : undefined) ||
-        (f.email ? localOverrides[f.email] : undefined);
-
-      const resolvedUsername = (override?.username || f.username || '').trim();
-      const resolvedPassword = (override?.password || f.password || '').trim();
+      const resolvedUsername = (f.username || '').trim();
       const staffRoles: UserRole[] =
         f.roles && f.roles.length > 0 ? (f.roles as UserRole[]) : ['TEACHER'];
 
@@ -204,6 +187,7 @@ export const UserCredentialsView: React.FC = () => {
 
       const empTag = f.employeeCode || f.employeeId;
       const metaParts = [f.designation || 'Faculty', empTag ? `Code: ${empTag}` : null, f.email || null].filter(Boolean);
+      const googleLinked = Boolean((f as any).googleEmail || (f as any).google_email);
 
       rows.push({
         rowKey: `staff-${f.id}`,
@@ -216,18 +200,14 @@ export const UserCredentialsView: React.FC = () => {
         roles: staffRoles,
         primaryUsername: resolvedUsername || f.email || empTag || '—',
         acceptedIdentifiers: aliases,
-        passwordDisplay: resolvedPassword || 'Staff2026!',
-        passwordSource: resolvedPassword ? 'SAVED' : 'PORTAL_FALLBACK',
-        fallbackNote: resolvedPassword
-          ? 'Also accepts Staff2026! / Nss2026!'
-          : 'No custom password saved — portal accepts Staff2026!, Nss2026!, or any ≥4 char password with a digit',
+        securityStatus: f.mustChangePassword ? 'Temp Password · Reset Required' : 'Bcrypt Hash Protected',
+        googleLinked,
+        authNote: googleLinked
+          ? 'Google Sign-In verified · Password stored as bcrypt hash'
+          : 'Password stored as server-side bcrypt hash (resettable below)',
         statusLabel: f.status || (f.isActive === false ? 'INACTIVE' : 'ACTIVE'),
         editable: true,
-        facultyRef: {
-          ...f,
-          username: resolvedUsername || f.username,
-          password: resolvedPassword || f.password
-        }
+        facultyRef: f
       });
     });
 
@@ -237,16 +217,6 @@ export const UserCredentialsView: React.FC = () => {
     );
 
     sortedStudents.forEach(s => {
-      const mobile = s.mobileNumber || s.phone || s.phoneNumber || '';
-      const computedDefaultPass = generateDefaultStudentPassword(s.dateOfBirth, mobile);
-      const savedPass = (s.password || '').trim();
-      const effectivePassword = savedPass || computedDefaultPass || 'Nss2026!';
-      const passwordSource: UnifiedCredentialRow['passwordSource'] = savedPass
-        ? 'SAVED'
-        : computedDefaultPass
-          ? 'AUTO_DOB_MOBILE'
-          : 'PORTAL_FALLBACK';
-
       const primaryUsername = (
         s.username ||
         s.universityRegisterNumber ||
@@ -274,6 +244,7 @@ export const UserCredentialsView: React.FC = () => {
         s.rollNumber ? `Roll ${s.rollNumber}` : null,
         s.universityRegisterNumber ? `Reg: ${s.universityRegisterNumber}` : `Adm: ${s.admissionNumber}`
       ].filter(Boolean);
+      const googleLinked = Boolean((s as any).googleEmail || (s as any).google_email);
 
       rows.push({
         rowKey: `student-${s.id}`,
@@ -286,14 +257,9 @@ export const UserCredentialsView: React.FC = () => {
         roles: ['STUDENT'],
         primaryUsername: primaryUsername || '—',
         acceptedIdentifiers: aliases,
-        passwordDisplay: effectivePassword,
-        passwordSource,
-        fallbackNote:
-          passwordSource === 'SAVED'
-            ? 'Also accepts Nss2026!'
-            : passwordSource === 'AUTO_DOB_MOBILE'
-              ? 'Auto-generated (DDMMYYYY + last 2 mobile digits) · Also accepts Nss2026!'
-              : 'Default student fallback password',
+        securityStatus: s.mustChangePassword ? 'Temp Password · Reset Required' : 'Bcrypt Hash Protected',
+        googleLinked,
+        authNote: 'Initial onboarding default uses DOB (DDMMYYYY) + mobile last 2 digits until changed',
         statusLabel: s.status || 'ACTIVE',
         editable: true,
         studentRef: s
@@ -301,7 +267,7 @@ export const UserCredentialsView: React.FC = () => {
     });
 
     return rows;
-  }, [activeRole, faculty, students, deptMap, progMap]);
+  }, [activeRole, user, faculty, students, deptMap, progMap]);
 
   const categoryCounts = useMemo(() => {
     const counts: Record<CredentialCategory, number> = {
@@ -393,19 +359,13 @@ export const UserCredentialsView: React.FC = () => {
     }
   };
 
-  const toggleRowReveal = (rowKey: string) => {
-    setRevealedRows(prev => ({
-      ...prev,
-      [rowKey]: !prev[rowKey]
-    }));
-  };
-
   const openEditModal = (row: UnifiedCredentialRow) => {
     if (!row.editable) return;
     setEditingRow(row);
     setEditUsername(row.primaryUsername === '—' ? '' : row.primaryUsername);
-    setEditPassword(row.passwordDisplay || '');
-    setShowEditPassword(true);
+    setEditPassword('');
+    setForceChangeOnLogin(true);
+    setShowEditPassword(false);
     setEditError(null);
   };
 
@@ -419,65 +379,106 @@ export const UserCredentialsView: React.FC = () => {
 
     if (editingRow.sourceType === 'STAFF' && editingRow.facultyRef) {
       const uRules = checkStaffUsernameRules(cleanUsername);
-      const pRules = checkStaffPasswordRules(cleanPassword);
       if (!uRules.isValid) {
         setEditError('Staff username must be at least 3 characters with no spaces (letters, numbers, dot, underscore, hyphen).');
         return;
       }
-      if (!pRules.isValid) {
-        setEditError('Staff password must be at least 4 characters long.');
+      if (cleanPassword && cleanPassword.length < 6) {
+        setEditError('New staff password must be at least 6 characters long.');
         return;
       }
 
       setIsSavingEdit(true);
-      const res = await updateFaculty(editingRow.facultyRef.id, {
-        username: cleanUsername,
-        password: cleanPassword
-      });
-      setIsSavingEdit(false);
-
-      if (!res.success) {
-        setEditError(res.error || 'Failed to update staff credentials.');
-        return;
+      if (cleanUsername !== (editingRow.facultyRef.username || '').trim()) {
+        const res = await updateFaculty(editingRow.facultyRef.id, {
+          username: cleanUsername
+        });
+        if (!res.success) {
+          setIsSavingEdit(false);
+          setEditError(res.error || 'Failed to update staff username.');
+          return;
+        }
       }
+
+      if (cleanPassword) {
+        const resetRes = await adminResetUserPassword(
+          'FACULTY',
+          editingRow.facultyRef.id,
+          cleanPassword,
+          forceChangeOnLogin
+        );
+        if (!resetRes.success) {
+          setIsSavingEdit(false);
+          setEditError(resetRes.error || 'Failed to reset staff password.');
+          return;
+        }
+      }
+
+      setIsSavingEdit(false);
       setPageBanner({
         type: 'success',
-        text: `Updated login credentials for ${editingRow.displayName}.`
+        text: cleanPassword
+          ? `Updated username and issued bcrypt password reset for ${editingRow.displayName}.`
+          : `Updated login username for ${editingRow.displayName}.`
       });
       setEditingRow(null);
-      setTimeout(() => setPageBanner(null), 3500);
+      setTimeout(() => setPageBanner(null), 4000);
       return;
     }
 
     if (editingRow.sourceType === 'STUDENT' && editingRow.studentRef) {
       const uCheck = validateUsername(cleanUsername);
-      const pCheck = validatePassword(cleanPassword);
       if (!uCheck.isValid) {
         setEditError(uCheck.errors[0]);
         return;
       }
-      if (!pCheck.isValid) {
-        setEditError(pCheck.errors[0]);
-        return;
+      if (cleanPassword) {
+        const pCheck = validatePassword(cleanPassword);
+        if (!pCheck.isValid) {
+          setEditError(pCheck.errors[0]);
+          return;
+        }
+        if (cleanPassword.length < 6) {
+          setEditError('New student password must be at least 6 characters long.');
+          return;
+        }
       }
 
       setIsSavingEdit(true);
-      const res = await updateStudent(editingRow.studentRef.id, {
-        username: cleanUsername,
-        password: cleanPassword
-      });
-      setIsSavingEdit(false);
-
-      if (!res.success) {
-        setEditError(res.error || 'Failed to update student credentials.');
-        return;
+      if (cleanUsername !== (editingRow.studentRef.username || '').trim()) {
+        const res = await updateStudent(editingRow.studentRef.id, {
+          username: cleanUsername
+        });
+        if (!res.success) {
+          setIsSavingEdit(false);
+          setEditError(res.error || 'Failed to update student username.');
+          return;
+        }
       }
+
+      if (cleanPassword) {
+        const resetRes = await adminResetUserPassword(
+          'STUDENT',
+          editingRow.studentRef.id,
+          cleanPassword,
+          forceChangeOnLogin
+        );
+        if (!resetRes.success) {
+          setIsSavingEdit(false);
+          setEditError(resetRes.error || 'Failed to reset student password.');
+          return;
+        }
+      }
+
+      setIsSavingEdit(false);
       setPageBanner({
         type: 'success',
-        text: `Updated login credentials for ${editingRow.displayName}.`
+        text: cleanPassword
+          ? `Updated username and issued bcrypt password reset for ${editingRow.displayName}.`
+          : `Updated login username for ${editingRow.displayName}.`
       });
       setEditingRow(null);
-      setTimeout(() => setPageBanner(null), 3500);
+      setTimeout(() => setPageBanner(null), 4000);
     }
   };
 
@@ -489,9 +490,9 @@ export const UserCredentialsView: React.FC = () => {
       'Department',
       'Primary Username',
       'Accepted Login Identifiers',
-      'Password',
-      'Password Source',
-      'Status'
+      'Security Status',
+      'Google Linked',
+      'Account Status'
     ];
 
     const csvRows = [
@@ -504,8 +505,8 @@ export const UserCredentialsView: React.FC = () => {
           row.departmentLabel,
           row.primaryUsername,
           row.acceptedIdentifiers.join(' | '),
-          row.passwordDisplay,
-          row.passwordSource,
+          row.securityStatus,
+          row.googleLinked ? 'YES' : 'NO',
           row.statusLabel
         ]
           .map(sanitizeCsvCell)
@@ -517,7 +518,7 @@ export const UserCredentialsView: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `nss-college-credentials-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `nss-college-accounts-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -525,14 +526,14 @@ export const UserCredentialsView: React.FC = () => {
 
     setPageBanner({
       type: 'success',
-      text: `Exported ${filteredRows.length} credential record(s) to CSV.`
+      text: `Exported ${filteredRows.length} account directory record(s) (passwords omitted for security).`
     });
     setTimeout(() => setPageBanner(null), 3500);
   };
 
   const filterTabs: { id: CredentialCategory; label: string; count: number }[] = [
     { id: 'ALL', label: 'All Users', count: categoryCounts.ALL },
-    { id: 'MASTER', label: 'Master Accounts', count: categoryCounts.MASTER },
+    { id: 'MASTER', label: 'Super Admin', count: categoryCounts.MASTER },
     { id: 'PRINCIPAL', label: 'Principal', count: categoryCounts.PRINCIPAL },
     { id: 'HOD', label: 'HOD', count: categoryCounts.HOD },
     { id: 'TEACHER', label: 'Teacher', count: categoryCounts.TEACHER },
@@ -541,8 +542,6 @@ export const UserCredentialsView: React.FC = () => {
     { id: 'OFFICE_STAFF', label: 'Office Staff', count: categoryCounts.OFFICE_STAFF },
     { id: 'STUDENT', label: 'Students', count: categoryCounts.STUDENT }
   ];
-
-  const isRowRevealed = (rowKey: string) => showAllPasswords || !!revealedRows[rowKey];
 
   const staffUsernameValidation = checkStaffUsernameRules(editUsername);
   const staffPasswordValidation = checkStaffPasswordRules(editPassword);
@@ -560,28 +559,19 @@ export const UserCredentialsView: React.FC = () => {
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100 tracking-tight">
-                User Credentials Directory
+                User Credentials &amp; Security Directory
               </h2>
               <span className="text-[11px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded bg-rose-50 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-900">
                 Super Admin Only
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-              View, copy, and update usernames and passwords across Master accounts, Faculty &amp; Staff roles, and Student portals.
+              Manage usernames and issue server-verified password resets across Staff &amp; Faculty and Student portals. Passwords are encrypted server-side and never displayed or exported.
             </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          <button
-            type="button"
-            onClick={() => setShowAllPasswords(prev => !prev)}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
-          >
-            {showAllPasswords ? <EyeOff className="w-4 h-4 text-rose-600 dark:text-rose-400" /> : <Eye className="w-4 h-4 text-slate-600 dark:text-slate-300" />}
-            <span>{showAllPasswords ? 'Hide All Passwords' : 'Show All Passwords'}</span>
-          </button>
-
           <button
             type="button"
             onClick={handleExportCsv}
@@ -765,15 +755,13 @@ export const UserCredentialsView: React.FC = () => {
                     <th className="py-3 px-4">User &amp; Department</th>
                     <th className="py-3 px-4">Portal Role(s)</th>
                     <th className="py-3 px-4">Username &amp; Accepted IDs</th>
-                    <th className="py-3 px-4">Password</th>
+                    <th className="py-3 px-4">Credential Security</th>
                     <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
                   {filteredRows.map(row => {
-                    const revealed = isRowRevealed(row.rowKey);
                     const userCopyKey = `u-${row.rowKey}`;
-                    const passCopyKey = `p-${row.rowKey}`;
                     const pairCopyKey = `both-${row.rowKey}`;
 
                     return (
@@ -834,34 +822,20 @@ export const UserCredentialsView: React.FC = () => {
                         </td>
 
                         <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-1.5">
-                            <code className="px-2 py-1 rounded bg-amber-50/70 dark:bg-slate-800 border border-amber-200/70 dark:border-slate-700 text-slate-900 dark:text-amber-300 font-mono text-xs font-semibold tabular-nums">
-                              {revealed ? row.passwordDisplay : '••••••••••'}
-                            </code>
-                            <button
-                              type="button"
-                              onClick={() => toggleRowReveal(row.rowKey)}
-                              title={revealed ? 'Hide password' : 'Show password'}
-                              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer"
-                            >
-                              {revealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleCopy(passCopyKey, row.passwordDisplay)}
-                              title="Copy password"
-                              className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer"
-                            >
-                              {copiedKey === passCopyKey ? (
-                                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
-                              )}
-                            </button>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300 font-semibold text-[11px]">
+                              <ShieldCheck className="w-3 h-3" />
+                              {row.securityStatus}
+                            </span>
+                            {row.googleLinked && (
+                              <span className="px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-900 text-blue-700 dark:text-blue-300 font-semibold text-[10px]">
+                                Google Linked
+                              </span>
+                            )}
                           </div>
-                          {row.fallbackNote && (
+                          {row.authNote && (
                             <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 max-w-[240px]">
-                              {row.fallbackNote}
+                              {row.authNote}
                             </p>
                           )}
                         </td>
@@ -873,7 +847,7 @@ export const UserCredentialsView: React.FC = () => {
                               onClick={() =>
                                 handleCopy(
                                   pairCopyKey,
-                                  `${row.displayName}\nUsername: ${row.primaryUsername}\nPassword: ${row.passwordDisplay}`
+                                  `${row.displayName}\nUsername: ${row.primaryUsername}\nPortal URL: ${window.location.origin}`
                                 )
                               }
                               className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-[11px] font-semibold text-slate-700 dark:text-slate-200 transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -886,7 +860,7 @@ export const UserCredentialsView: React.FC = () => {
                               ) : (
                                 <>
                                   <Copy className="w-3.5 h-3.5" />
-                                  <span>Copy Pair</span>
+                                  <span>Copy ID</span>
                                 </>
                               )}
                             </button>
@@ -898,11 +872,11 @@ export const UserCredentialsView: React.FC = () => {
                                 className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-slate-800 hover:bg-rose-900 dark:hover:bg-rose-800 text-white text-[11px] font-semibold transition-colors inline-flex items-center gap-1 cursor-pointer"
                               >
                                 <Edit3 className="w-3.5 h-3.5" />
-                                <span>Edit</span>
+                                <span>Update / Reset</span>
                               </button>
                             ) : (
                               <span className="px-2 py-1 text-[10px] font-semibold text-slate-400 dark:text-slate-500">
-                                Fixed Key
+                                Protected
                               </span>
                             )}
                           </div>
@@ -917,9 +891,7 @@ export const UserCredentialsView: React.FC = () => {
             {/* Mobile / Tablet List */}
             <div className="lg:hidden divide-y divide-slate-200 dark:divide-slate-800">
               {filteredRows.map(row => {
-                const revealed = isRowRevealed(row.rowKey);
                 const userCopyKey = `mu-${row.rowKey}`;
-                const passCopyKey = `mp-${row.rowKey}`;
                 const pairCopyKey = `mboth-${row.rowKey}`;
 
                 return (
@@ -975,39 +947,25 @@ export const UserCredentialsView: React.FC = () => {
 
                       <div>
                         <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
-                          Password
+                          Credential Security
                         </span>
-                        <div className="flex items-center justify-between gap-2 mt-1">
-                          <code className="font-mono text-xs font-bold text-slate-900 dark:text-amber-300 tabular-nums truncate">
-                            {revealed ? row.passwordDisplay : '••••••••••'}
-                          </code>
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => toggleRowReveal(row.rowKey)}
-                              className="p-1 text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-                            >
-                              {revealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleCopy(passCopyKey, row.passwordDisplay)}
-                              className="p-1 text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-                            >
-                              {copiedKey === passCopyKey ? (
-                                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                          </div>
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 dark:text-emerald-300">
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            {row.securityStatus}
+                          </span>
+                          {row.googleLinked && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">
+                              Google Linked
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
 
-                    {row.fallbackNote && (
+                    {row.authNote && (
                       <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                        {row.fallbackNote}
+                        {row.authNote}
                       </p>
                     )}
 
@@ -1017,13 +975,13 @@ export const UserCredentialsView: React.FC = () => {
                         onClick={() =>
                           handleCopy(
                             pairCopyKey,
-                            `${row.displayName}\nUsername: ${row.primaryUsername}\nPassword: ${row.passwordDisplay}`
+                            `${row.displayName}\nUsername: ${row.primaryUsername}\nPortal URL: ${window.location.origin}`
                           )
                         }
                         className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 inline-flex items-center gap-1 cursor-pointer"
                       >
                         {copiedKey === pairCopyKey ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                        <span>{copiedKey === pairCopyKey ? 'Copied' : 'Copy Pair'}</span>
+                        <span>{copiedKey === pairCopyKey ? 'Copied' : 'Copy ID'}</span>
                       </button>
 
                       {row.editable && (
@@ -1033,7 +991,7 @@ export const UserCredentialsView: React.FC = () => {
                           className="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-rose-800 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
                         >
                           <Edit3 className="w-3.5 h-3.5" />
-                          <span>Edit</span>
+                          <span>Update / Reset</span>
                         </button>
                       )}
                     </div>
@@ -1045,11 +1003,11 @@ export const UserCredentialsView: React.FC = () => {
         )}
       </div>
 
-      {/* Edit Credentials Modal */}
+      {/* Update Username / Reset Password Modal */}
       <Modal
         isOpen={!!editingRow}
         onClose={() => !isSavingEdit && setEditingRow(null)}
-        title={editingRow ? `Edit Credentials · ${editingRow.displayName}` : 'Edit Credentials'}
+        title={editingRow ? `Update Account · ${editingRow.displayName}` : 'Update Account'}
         subtitle={
           editingRow
             ? `${editingRow.departmentLabel} · ${editingRow.roles.map(r => ROLE_LABELS[r]).join(', ')}`
@@ -1092,31 +1050,45 @@ export const UserCredentialsView: React.FC = () => {
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                  Portal Password
+                  Reset Password (Optional)
                 </label>
-                {editingRow.sourceType === 'STUDENT' && editingRow.studentRef && (
+                <div className="flex items-center gap-3">
                   <button
                     type="button"
                     onClick={() => {
-                      const s = editingRow.studentRef!;
-                      const def = generateDefaultStudentPassword(
-                        s.dateOfBirth,
-                        s.mobileNumber || s.phone || s.phoneNumber
-                      );
-                      if (def) {
-                        setEditPassword(def);
-                      } else {
-                        setEditError('Date of Birth or Mobile Number is missing on this student record.');
-                      }
+                      setEditPassword(generateSecureTempPassword());
+                      setShowEditPassword(true);
                     }}
-                    className="text-[11px] font-semibold text-rose-700 dark:text-rose-400 hover:underline inline-flex items-center gap-1 cursor-pointer"
+                    className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-400 hover:underline inline-flex items-center gap-1 cursor-pointer"
                   >
                     <Sparkles className="w-3 h-3" />
-                    <span>Use DOB + Mobile Default</span>
+                    <span>Generate Secure Temp</span>
                   </button>
-                )}
+                  {editingRow.sourceType === 'STUDENT' && editingRow.studentRef && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const s = editingRow.studentRef!;
+                        const def = generateDefaultStudentPassword(
+                          s.dateOfBirth,
+                          s.mobileNumber || s.phone || s.phoneNumber
+                        );
+                        if (def) {
+                          setEditPassword(def);
+                          setShowEditPassword(true);
+                        } else {
+                          setEditError('Date of Birth or Mobile Number is missing on this student record.');
+                        }
+                      }}
+                      className="text-[11px] font-semibold text-rose-700 dark:text-rose-400 hover:underline inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      <span>Use DOB + Mobile Default</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="relative">
@@ -1124,7 +1096,7 @@ export const UserCredentialsView: React.FC = () => {
                   type={showEditPassword ? 'text' : 'password'}
                   value={editPassword}
                   onChange={e => setEditPassword(e.target.value)}
-                  required
+                  placeholder="Leave blank to keep existing password (min 6 chars to reset)"
                   className="w-full pl-3 pr-10 py-2 text-sm font-mono bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-800/30"
                 />
                 <button
@@ -1136,20 +1108,38 @@ export const UserCredentialsView: React.FC = () => {
                 </button>
               </div>
 
-              {editingRow.sourceType === 'STAFF' ? (
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                  {staffPasswordValidation.isValid
-                    ? 'Meets staff minimum password length (≥4 chars).'
-                    : 'Must be at least 4 characters long.'}
-                </p>
+              {editPassword.trim() ? (
+                editingRow.sourceType === 'STAFF' ? (
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                    {staffPasswordValidation.isValid && editPassword.trim().length >= 6
+                      ? 'Valid reset password (≥6 chars, encrypted server-side).'
+                      : 'Password reset requires at least 6 characters.'}
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                    {studentPasswordValidation.isValid && editPassword.trim().length >= 6
+                      ? 'Valid student reset password (≥6 chars with at least 1 digit).'
+                      : 'Student password reset requires ≥6 characters and at least 1 number.'}
+                  </p>
+                )
               ) : (
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                  {studentPasswordValidation.isValid
-                    ? 'Valid student password (≥4 chars with at least 1 digit).'
-                    : 'Student passwords require ≥4 characters and at least 1 number.'}
+                  Leave empty if only updating username; existing bcrypt password hash remains unchanged.
                 </p>
               )}
             </div>
+
+            {editPassword.trim() && (
+              <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={forceChangeOnLogin}
+                  onChange={e => setForceChangeOnLogin(e.target.checked)}
+                  className="rounded text-rose-800"
+                />
+                <span>Require user to change this temporary password on next login</span>
+              </label>
+            )}
 
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
               <button
@@ -1165,7 +1155,7 @@ export const UserCredentialsView: React.FC = () => {
                 disabled={isSavingEdit}
                 className="px-4 py-2 rounded-lg bg-rose-900 hover:bg-rose-800 disabled:opacity-60 text-white text-xs font-semibold transition-colors cursor-pointer"
               >
-                {isSavingEdit ? 'Saving...' : 'Save Credentials'}
+                {isSavingEdit ? 'Applying...' : 'Save Changes'}
               </button>
             </div>
           </form>

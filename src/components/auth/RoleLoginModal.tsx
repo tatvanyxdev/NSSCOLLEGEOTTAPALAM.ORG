@@ -64,14 +64,26 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
     signInWithGoogle,
     linkGoogleAccountToStudent,
     linkGoogleAccountToStaff,
+    getBootstrapStatus,
+    claimInitialAdmin,
     isLoading: isAuthLoading
   } = useAuth();
-  const { students, faculty, departments } = useCollegeData();
+  const { students, faculty } = useCollegeData();
 
   // Primary Segmented Tab: 'student' | 'staff'
   const [activeTab, setActiveTab] = useState<'student' | 'staff'>(
     initialRole && initialRole !== 'STUDENT' ? 'staff' : 'student'
   );
+
+  // First-Run Super Admin Claim states (only shown when no admin password is claimed in PostgreSQL)
+  const [adminClaimed, setAdminClaimed] = useState<boolean>(true);
+  const [showAdminBootstrapForm, setShowAdminBootstrapForm] = useState<boolean>(false);
+  const [bootstrapName, setBootstrapName] = useState('System Super Administrator');
+  const [bootstrapEmail, setBootstrapEmail] = useState('tatvanyxdev@gmail.com');
+  const [bootstrapUsername, setBootstrapUsername] = useState('superadmin');
+  const [bootstrapPassword, setBootstrapPassword] = useState('');
+  const [showBootstrapPassword, setShowBootstrapPassword] = useState(false);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
   // Student credentials
   const [studentId, setStudentId] = useState('');
@@ -122,16 +134,23 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, isFirstTimeSheetOpen, isOfficeHelpOpen, onClose]);
 
-  // Reset errors when modal opens/closes
+  // Reset errors & inspect server bootstrap status when modal opens
   useEffect(() => {
     if (isOpen) {
       setStudentError(null);
       setStaffError(null);
       setGoogleError(null);
       setLinkError(null);
+      setBootstrapError(null);
       setLinkSuccessMessage(null);
+      getBootstrapStatus().then(status => {
+        setAdminClaimed(status.adminClaimed);
+        if (!status.adminClaimed && initialRole === 'SUPER_ADMIN') {
+          setShowAdminBootstrapForm(true);
+        }
+      });
     }
-  }, [isOpen]);
+  }, [isOpen, initialRole]);
 
   if (!isOpen) return null;
 
@@ -241,6 +260,49 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
     }
   };
 
+  // First-Run Super Admin Bootstrap Claim Handler
+  const handleClaimInitialAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBootstrapError(null);
+
+    if (bootstrapUsername.trim().length < 4 || /\s/.test(bootstrapUsername.trim())) {
+      setBootstrapError('Username must be at least 4 characters with no spaces.');
+      return;
+    }
+    if (!bootstrapEmail.trim() || !bootstrapEmail.includes('@')) {
+      setBootstrapError('A valid administrator email address is required.');
+      return;
+    }
+    if (bootstrapPassword.length < 8) {
+      setBootstrapError('Password must be at least 8 characters long.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const res = await claimInitialAdmin({
+        username: bootstrapUsername.trim(),
+        email: bootstrapEmail.trim().toLowerCase(),
+        fullName: bootstrapName.trim() || 'System Super Administrator',
+        password: bootstrapPassword
+      });
+      if (!res.success) {
+        setBootstrapError(res.error || 'Could not claim initial Super Admin access.');
+        setIsSubmitting(false);
+        return;
+      }
+      setBootstrapPassword('');
+      setShowAdminBootstrapForm(false);
+      setAdminClaimed(true);
+      setIsSubmitting(false);
+      if (onSuccess) onSuccess();
+      onClose();
+    } catch (err: any) {
+      setBootstrapError(err?.message || 'Setup failed. Please try again.');
+      setIsSubmitting(false);
+    }
+  };
+
   // Student Login Handler
   const handleStudentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -258,7 +320,7 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
     setStudentError(null);
 
     try {
-      const result = loginWithStudentCredentials(cleanId, studentPassword, students);
+      const result = await loginWithStudentCredentials(cleanId, studentPassword, students);
       if (!result.success) {
         setStudentError(result.error || 'Incorrect register number or password.');
         setIsSubmitting(false);
@@ -290,7 +352,7 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
     setStaffError(null);
 
     try {
-      const result = loginWithStaffCredentials(cleanId, staffPassword, faculty);
+      const result = await loginWithStaffCredentials(cleanId, staffPassword, faculty);
       if (!result.success) {
         setStaffError(result.error || 'Incorrect username or password.');
         setIsSubmitting(false);
@@ -583,9 +645,136 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
             </div>
           ) : (
             /* ================================================================= */
-            /* CASE B: PRIMARY STANDARD & GOOGLE SIGN-IN VIEW */
+            /* CASE B: FIRST-RUN ADMIN SETUP OR PRIMARY SIGN-IN VIEW */
             /* ================================================================= */
+            !adminClaimed && showAdminBootstrapForm ? (
+              <div className="space-y-4 animate-in fade-in duration-200">
+                <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 rounded-xl border border-amber-200 dark:border-amber-900">
+                  <div className="flex items-center gap-2 text-amber-900 dark:text-amber-200 font-bold text-xs">
+                    <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Initial Super Administrator Setup</span>
+                  </div>
+                  <p className="text-[11px] text-amber-800 dark:text-amber-300 mt-1 leading-relaxed">
+                    No Super Administrator password has been claimed yet. Claim institutional root control now; this one-time setup locks permanently once submitted.
+                  </p>
+                </div>
+
+                {bootstrapError && (
+                  <div
+                    role="alert"
+                    className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-200 rounded-xl text-xs flex items-center gap-2"
+                  >
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                    <span className="font-medium">{bootstrapError}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleClaimInitialAdmin} className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      Full Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={bootstrapName}
+                      onChange={e => setBootstrapName(e.target.value)}
+                      disabled={isBusy}
+                      className="w-full h-11 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      Official Administrator Email
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={bootstrapEmail}
+                      onChange={e => setBootstrapEmail(e.target.value)}
+                      disabled={isBusy}
+                      className="w-full h-11 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      Super Admin Username
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={bootstrapUsername}
+                      onChange={e => setBootstrapUsername(e.target.value)}
+                      disabled={isBusy}
+                      className="w-full h-11 px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-sm font-mono bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      New Master Password (min 8 chars)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showBootstrapPassword ? 'text' : 'password'}
+                        required
+                        minLength={8}
+                        value={bootstrapPassword}
+                        onChange={e => setBootstrapPassword(e.target.value)}
+                        placeholder="Choose a strong password"
+                        disabled={isBusy}
+                        className="w-full h-11 pl-3 pr-10 rounded-xl border border-slate-300 dark:border-slate-700 text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowBootstrapPassword(!showBootstrapPassword)}
+                        className="absolute right-1 top-1/2 -translate-y-1/2 text-slate-400 p-2"
+                        aria-label={showBootstrapPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showBootstrapPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isBusy}
+                    className="w-full h-11 bg-rose-950 hover:bg-rose-900 text-white font-bold text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+                  >
+                    {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                    <span>Claim Super Admin & Sign In</span>
+                  </button>
+                </form>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAdminBootstrapForm(false)}
+                  className="text-xs text-slate-500 hover:underline w-full text-center cursor-pointer"
+                >
+                  Back to standard sign-in
+                </button>
+              </div>
+            ) : (
             <>
+              {!adminClaimed && (
+                <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-xl flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>First-Time Setup Ready</span>
+                    </p>
+                    <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                      Claim initial Super Admin credentials.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdminBootstrapForm(true)}
+                    className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg text-xs font-bold shrink-0 cursor-pointer"
+                  >
+                    Setup Admin
+                  </button>
+                </div>
+              )}
+
               {/* 1. PRIMARY PROMINENT GOOGLE SIGN-IN BUTTON */}
               <div>
                 <button
@@ -895,6 +1084,7 @@ export const RoleLoginModal: React.FC<RoleLoginModalProps> = ({
                 </button>
               </div>
             </>
+          )
           )}
         </div>
       </div>

@@ -46,7 +46,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenMaintenance,
   activeTabTitle = 'Dashboard'
 }) => {
-  const { user, activeRole, availableRoles, switchRole, logout } = useAuth();
+  const { user, activeRole, availableRoles, switchRole, changeOwnCredentials, logout } = useAuth();
   const {
     settings,
     notifications,
@@ -136,6 +136,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   const [isCredentialModalOpen, setIsCredentialModalOpen] = useState(false);
   const [profileUsername, setProfileUsername] = useState('');
+  const [currentCredPassword, setCurrentCredPassword] = useState('');
   const [profilePassword, setProfilePassword] = useState('');
   const [profilePhone, setProfilePhone] = useState('');
   const [isSavingCreds, setIsSavingCreds] = useState(false);
@@ -144,8 +145,9 @@ export const Header: React.FC<HeaderProps> = ({
   const handleOpenCredentialsModal = () => {
     setIsProfileOpen(false);
     const targetFac = currentFaculty || user?.facultyProfile;
-    setProfileUsername(targetFac?.username || user?.email?.split('@')[0] || '');
-    setProfilePassword(targetFac?.password || 'Staff2026!');
+    setProfileUsername(targetFac?.username || user?.username || user?.email?.split('@')[0] || '');
+    setCurrentCredPassword('');
+    setProfilePassword('');
     setProfilePhone(targetFac?.phoneNumber || targetFac?.mobileNumber || '');
     setCredSaveMessage(null);
     setIsCredentialModalOpen(true);
@@ -155,8 +157,9 @@ export const Header: React.FC<HeaderProps> = ({
     e.preventDefault();
     setCredSaveMessage(null);
     const targetFac = currentFaculty || user?.facultyProfile;
-    if (!targetFac) {
-      setCredSaveMessage({ type: 'error', text: 'No associated faculty profile found for this account.' });
+
+    if (!currentCredPassword) {
+      setCredSaveMessage({ type: 'error', text: 'Please enter your current password to verify your identity.' });
       return;
     }
 
@@ -166,29 +169,37 @@ export const Header: React.FC<HeaderProps> = ({
       return;
     }
 
-    const cleanPassword = profilePassword.trim();
-    if (cleanPassword.length < 4) {
-      setCredSaveMessage({ type: 'error', text: 'Password must be at least 4 characters long.' });
+    const cleanNewPassword = profilePassword.trim();
+    if (cleanNewPassword && cleanNewPassword.length < 4) {
+      setCredSaveMessage({ type: 'error', text: 'New password must be at least 4 characters long.' });
       return;
     }
 
     setIsSavingCreds(true);
-    const res = await updateFaculty(targetFac.id, {
-      username: cleanUsername,
-      password: cleanPassword,
-      phoneNumber: profilePhone.trim() || targetFac.phoneNumber,
-      mobileNumber: profilePhone.trim() || targetFac.phoneNumber
-    });
+    const credRes = await changeOwnCredentials(
+      currentCredPassword,
+      cleanUsername,
+      cleanNewPassword || undefined
+    );
+
+    if (!credRes.success) {
+      setIsSavingCreds(false);
+      setCredSaveMessage({ type: 'error', text: credRes.error || 'Failed to update credentials.' });
+      return;
+    }
+
+    if (targetFac && profilePhone.trim() && profilePhone.trim() !== (targetFac.phoneNumber || targetFac.mobileNumber)) {
+      await updateFaculty(targetFac.id, {
+        phoneNumber: profilePhone.trim(),
+        mobileNumber: profilePhone.trim()
+      });
+    }
 
     setIsSavingCreds(false);
-    if (res.success) {
-      setCredSaveMessage({ type: 'success', text: `Staff portal username "${cleanUsername}" successfully updated & permanently saved!` });
-      setTimeout(() => {
-        setIsCredentialModalOpen(false);
-      }, 1400);
-    } else {
-      setCredSaveMessage({ type: 'error', text: res.error || 'Failed to update credentials.' });
-    }
+    setCredSaveMessage({ type: 'success', text: `Portal credentials for "${cleanUsername}" securely updated!` });
+    setTimeout(() => {
+      setIsCredentialModalOpen(false);
+    }, 1400);
   };
 
   return (
@@ -637,18 +648,33 @@ export const Header: React.FC<HeaderProps> = ({
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                  Staff Portal Password <span className="text-rose-500">*</span>
+                  Current Password <span className="text-rose-500">*</span>
                 </label>
                 <input
-                  type="text"
+                  type="password"
+                  value={currentCredPassword}
+                  onChange={e => setCurrentCredPassword(e.target.value)}
+                  placeholder="Enter current password to authorize change"
+                  required
+                  autoComplete="current-password"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-hidden"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
+                  New Portal Password (Optional)
+                </label>
+                <input
+                  type="password"
                   value={profilePassword}
                   onChange={e => setProfilePassword(e.target.value)}
-                  placeholder="Staff2026!"
-                  required
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-hidden"
+                  placeholder="Leave blank to keep current password"
+                  autoComplete="new-password"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-hidden"
                 />
                 <p className="text-[11px] text-slate-400 mt-1">
-                  Minimum 4 characters. Used to log into the staff portal.
+                  Minimum 4 characters if changing password. Stored securely as an irreversible hash.
                 </p>
               </div>
 

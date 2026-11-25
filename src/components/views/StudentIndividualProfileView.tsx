@@ -32,7 +32,7 @@ import { auth as firebaseAuth } from '../../lib/firebase';
 import { firebaseSyncService } from '../../services/firebaseSyncService';
 
 export const StudentIndividualProfileView: React.FC = () => {
-  const { user } = useAuth();
+  const { user, changeOwnCredentials, linkGoogleAccountToStudent } = useAuth();
   const {
     students,
     departments,
@@ -40,7 +40,6 @@ export const StudentIndividualProfileView: React.FC = () => {
     courses,
     courseOfferings,
     studentCourseRegistrations,
-    updateStudent,
     getStudentAttendanceSummary
   } = useCollegeData();
 
@@ -61,6 +60,7 @@ export const StudentIndividualProfileView: React.FC = () => {
 
   // Password change state
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isSavingPassword, setIsSavingPassword] = useState(false);
@@ -68,11 +68,19 @@ export const StudentIndividualProfileView: React.FC = () => {
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
 
   const [isLinkingGoogle, setIsLinkingGoogle] = useState(false);
+  const [showGoogleConfirmPrompt, setShowGoogleConfirmPrompt] = useState(false);
+  const [googleConfirmPassword, setGoogleConfirmPassword] = useState('');
   const [googleLinkSuccess, setGoogleLinkSuccess] = useState<string | null>(null);
   const [googleLinkError, setGoogleLinkError] = useState<string | null>(null);
 
-  const handleLinkGoogle = async () => {
+  const handleLinkGoogle = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!currentStudent) return;
+    if (!googleConfirmPassword.trim()) {
+      setGoogleLinkError('Enter your current portal password to authorize linking a Google Account.');
+      return;
+    }
+
     setIsLinkingGoogle(true);
     setGoogleLinkError(null);
     setGoogleLinkSuccess(null);
@@ -83,28 +91,50 @@ export const StudentIndividualProfileView: React.FC = () => {
       const gUser = cred.user;
       const cleanEmail = (gUser.email || '').trim().toLowerCase();
 
-      if (!cleanEmail) {
-        setGoogleLinkError('No email returned from Google.');
+      if (!cleanEmail || !gUser.emailVerified) {
+        setGoogleLinkError('A verified Google email address is required.');
         setIsLinkingGoogle(false);
         return;
       }
 
-      await firebaseSyncService.syncGoogleAccountLink({
-        id: cleanEmail.replace(/[^a-zA-Z0-9_-]/g, '_'),
-        email: cleanEmail,
-        userType: 'STUDENT',
-        profileId: currentStudent.id,
-        name: currentStudent.fullName,
-        identifier: currentStudent.universityRegisterNumber || currentStudent.admissionNumber,
-        linkedAt: new Date().toISOString()
-      });
+      const identifier =
+        currentStudent.username ||
+        currentStudent.universityRegisterNumber ||
+        currentStudent.admissionNumber;
 
-      await updateStudent(currentStudent.id, {
-        email: cleanEmail,
-        profilePhotoUrl: currentStudent.profilePhotoUrl || gUser.photoURL || undefined
-      });
+      const linkRes = await linkGoogleAccountToStudent(
+        cleanEmail,
+        identifier,
+        googleConfirmPassword,
+        undefined,
+        {
+          displayName: gUser.displayName || undefined,
+          photoURL: gUser.photoURL || undefined,
+          uid: gUser.uid
+        }
+      );
 
-      setGoogleLinkSuccess(`Connected Google Account (${cleanEmail})! 1-Tap sign-in is active.`);
+      if (!linkRes.success) {
+        setGoogleLinkError(linkRes.error || 'Password verification or Google link failed.');
+        setIsLinkingGoogle(false);
+        return;
+      }
+
+      firebaseSyncService
+        .syncGoogleAccountLink({
+          id: cleanEmail.replace(/[^a-zA-Z0-9_-]/g, '_'),
+          email: cleanEmail,
+          userType: 'STUDENT',
+          profileId: currentStudent.id,
+          name: currentStudent.fullName,
+          identifier,
+          linkedAt: new Date().toISOString()
+        })
+        .catch(() => {});
+
+      setGoogleConfirmPassword('');
+      setShowGoogleConfirmPrompt(false);
+      setGoogleLinkSuccess(`Connected Google Account (${cleanEmail})! Verified 1-Tap sign-in is active.`);
       setIsLinkingGoogle(false);
     } catch (err: any) {
       if (err?.code !== 'auth/popup-closed-by-user') {
@@ -150,6 +180,11 @@ export const StudentIndividualProfileView: React.FC = () => {
     setPasswordError(null);
     setPasswordSuccess(null);
 
+    if (!currentPassword.trim()) {
+      setPasswordError('Please enter your current portal password.');
+      return;
+    }
+
     const validation = validatePassword(newPassword);
     if (!validation.isValid) {
       setPasswordError(validation.errors[0]);
@@ -163,25 +198,23 @@ export const StudentIndividualProfileView: React.FC = () => {
 
     setIsSavingPassword(true);
 
-    // Save updated password with confirmed write
-    const res = await updateStudent(currentStudent.id, {
-      password: newPassword
-    });
+    const res = await changeOwnCredentials(currentPassword, undefined, newPassword);
 
     setIsSavingPassword(false);
 
     if (!res.success) {
-      setPasswordError(res.error || 'Failed to update password in database. Please try again.');
+      setPasswordError(res.error || 'Current password verification failed or database update rejected.');
       return;
     }
 
-    setPasswordSuccess('Password updated successfully! You can use this password for your next login.');
+    setPasswordSuccess('Password updated securely! You can use this password for your next login.');
     setTimeout(() => {
       setIsChangePasswordOpen(false);
+      setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
       setPasswordSuccess(null);
-    }, 2000);
+    }, 1800);
   };
 
   const rules = checkCredentialRules(newPassword);
@@ -778,17 +811,58 @@ export const StudentIndividualProfileView: React.FC = () => {
                   )}
                 </div>
 
-                {currentStudent.email ? (
+                {currentStudent.email && (
+                  <p className="text-[11px] text-slate-600">
+                    Registered email: <span className="font-mono font-semibold text-slate-800">{currentStudent.email}</span>
+                  </p>
+                )}
+
+                {showGoogleConfirmPrompt ? (
+                  <form onSubmit={handleLinkGoogle} className="space-y-2 pt-1">
+                    <label className="block text-[11px] font-bold text-slate-700">
+                      Confirm Current Portal Password
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={googleConfirmPassword}
+                      onChange={e => setGoogleConfirmPassword(e.target.value)}
+                      placeholder="Enter current portal password"
+                      className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="submit"
+                        disabled={isLinkingGoogle}
+                        className="flex-1 py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+                      >
+                        {isLinkingGoogle ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                        <span>Verify &amp; Choose Google Account</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowGoogleConfirmPrompt(false);
+                          setGoogleConfirmPassword('');
+                          setGoogleLinkError(null);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : currentStudent.email ? (
                   <div className="space-y-1.5">
-                    <p className="text-[11px] text-slate-600">
-                      Registered email: <span className="font-mono font-semibold text-slate-800">{currentStudent.email}</span>
-                    </p>
                     <button
-                      onClick={handleLinkGoogle}
-                      disabled={isLinkingGoogle}
-                      className="w-full py-1.5 px-3 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-lg font-semibold text-[11px] flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+                      type="button"
+                      onClick={() => {
+                        setShowGoogleConfirmPrompt(true);
+                        setGoogleLinkError(null);
+                      }}
+                      className="w-full py-1.5 px-3 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-lg font-semibold text-[11px] flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                     >
-                      {isLinkingGoogle ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-blue-600" />}
+                      <Sparkles className="w-3.5 h-3.5 text-blue-600" />
                       <span>Switch / Re-link Google Account</span>
                     </button>
                   </div>
@@ -798,11 +872,14 @@ export const StudentIndividualProfileView: React.FC = () => {
                       Connect your Google Account to sign in with 1 tap on your mobile device.
                     </p>
                     <button
-                      onClick={handleLinkGoogle}
-                      disabled={isLinkingGoogle}
-                      className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer disabled:opacity-60"
+                      type="button"
+                      onClick={() => {
+                        setShowGoogleConfirmPrompt(true);
+                        setGoogleLinkError(null);
+                      }}
+                      className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer"
                     >
-                      {isLinkingGoogle ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                      <Sparkles className="w-3.5 h-3.5" />
                       <span>Connect Google Account</span>
                     </button>
                   </div>
@@ -854,7 +931,14 @@ export const StudentIndividualProfileView: React.FC = () => {
                 <h3 className="text-base font-bold">Update Student Password</h3>
               </div>
               <button
-                onClick={() => setIsChangePasswordOpen(false)}
+                onClick={() => {
+                  setCurrentPassword('');
+                  setNewPassword('');
+                  setConfirmPassword('');
+                  setPasswordError(null);
+                  setPasswordSuccess(null);
+                  setIsChangePasswordOpen(false);
+                }}
                 className="text-slate-400 hover:text-white text-xs font-bold"
               >
                 Cancel
@@ -862,6 +946,18 @@ export const StudentIndividualProfileView: React.FC = () => {
             </div>
 
             <form onSubmit={handleUpdatePassword} className="p-6 space-y-4 text-xs">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Current Password</label>
+                <input
+                  type="password"
+                  value={currentPassword}
+                  onChange={e => setCurrentPassword(e.target.value)}
+                  placeholder="Enter your current password"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium text-sm"
+                  required
+                />
+              </div>
+
               <div>
                 <label className="font-bold text-slate-700 block mb-1">New Password</label>
                 <input

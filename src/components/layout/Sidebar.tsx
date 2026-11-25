@@ -145,6 +145,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             title: 'Directory',
             items: [
               { id: 'students', label: 'Students', icon: Users },
+              { id: 'onboarded-students', label: 'Onboarded Students', icon: GraduationCap },
               { id: 'staff-enrollment', label: 'Staff & Faculty', icon: UserCheck },
               { id: 'registrations', label: 'Course Allocations', icon: BookOpen }
             ]
@@ -165,6 +166,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             title: 'Directory',
             items: [
               { id: 'students', label: 'Students', icon: Users },
+              { id: 'onboarded-students', label: 'Onboarded Students', icon: GraduationCap },
               { id: 'staff-enrollment', label: 'Staff', icon: UserCheck },
               { id: 'registrations', label: 'Course Allocations', icon: BookOpen }
             ]
@@ -182,6 +184,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             title: 'Students & Classes',
             items: [
               { id: 'students', label: 'Students', icon: Users },
+              { id: 'onboarded-students', label: 'Onboarded Students', icon: GraduationCap },
               { id: 'registrations', label: 'Course Allocations', icon: BookOpen }
             ]
           }

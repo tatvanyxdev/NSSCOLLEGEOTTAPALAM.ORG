@@ -112,14 +112,18 @@ export const courseService = {
   async deleteCourse(id: string): Promise<{ success: boolean; error: Error | null }> {
     try {
       const validId = toValidUuid(id) || id;
+
+      // Clear dependent course offerings first (cascades groups, registrations, timetable, sessions)
+      const { error: offError } = await supabase.from('course_offerings').delete().eq('course_id', validId);
+      if (offError) throw offError;
+
       const { error } = await supabase.from('courses').delete().eq('id', validId);
-      if (error) {
-        console.warn('Supabase deleteCourse warning:', error.message);
-      }
+      if (error) throw error;
+
       return { success: true, error: null };
     } catch (err: any) {
-      console.warn('Supabase courseService.deleteCourse fallback:', err?.message || err);
-      return { success: true, error: null };
+      console.warn('Supabase courseService.deleteCourse error:', err?.message || err);
+      return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
     }
   },
 

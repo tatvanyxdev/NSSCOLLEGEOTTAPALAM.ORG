@@ -16,6 +16,40 @@ export const DEFAULT_WEBHOOK_URL =
 export const DEFAULT_DEPLOYMENT_ID =
   'AKfycbwUsYbi-kx4riUvslgfxf9TWcUitMqRZVdtKcTxx65mrn7cBBaR3AbLWhRJ5HP3B6Pf';
 
+const ALLOWED_WEBHOOK_HOSTS = ['script.google.com', 'script.googleusercontent.com'];
+
+export function validateAppsScriptWebhookUrl(rawUrl: string): string | null {
+  try {
+    const parsed = new URL((rawUrl || '').trim());
+    if (parsed.protocol !== 'https:') return null;
+    const host = parsed.hostname.toLowerCase();
+    if (!ALLOWED_WEBHOOK_HOSTS.some(allowed => host === allowed || host.endsWith(`.${allowed}`))) {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeCsvField(val: unknown): string {
+  let str = String(val ?? '');
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = `'${str}`;
+  }
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('nss-auth-logout', () => {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  });
+}
+
 export const GOOGLE_APPS_SCRIPT_SAMPLE_CODE = `// ====================================================================
 // NSS COLLEGE OTTAPALAM - BUS CONCESSION GOOGLE SHEETS WEBHOOK
 // Free Google Apps Script to auto-append student bus concession cards
@@ -223,10 +257,14 @@ export const busConcessionService = {
       );
     }
 
+    const randomSuffix = typeof crypto !== 'undefined' && crypto.getRandomValues
+      ? Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join('')
+      : Date.now().toString(36);
+
     const newApp: BusConcessionApplication = {
       ...data,
       admissionNumber: cleanAdmission,
-      id: `concession-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: `concession-${Date.now()}-${randomSuffix}`,
       departmentId: (data as any).departmentId || deptId,
       departmentName: (data as any).departmentName || metadata?.departmentName || 'Department of Physics',
       status: 'SUBMITTED',
@@ -238,9 +276,9 @@ export const busConcessionService = {
     const updated = [newApp, ...existing];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 
-    // 3. Sync to Google Sheets Webhook
+    // 3. Sync to verified HTTPS Google Apps Script Webhook
     let googleSheetsSynced = false;
-    const webhookUrl = this.getSheetsWebhookUrl();
+    const webhookUrl = validateAppsScriptWebhookUrl(this.getSheetsWebhookUrl());
     if (webhookUrl) {
       try {
         await fetch(webhookUrl, {
@@ -284,7 +322,9 @@ export const busConcessionService = {
   },
 
   getSheetsWebhookUrl(): string {
-    return localStorage.getItem(WEBHOOK_STORAGE_KEY) || DEFAULT_WEBHOOK_URL;
+    const stored = localStorage.getItem(WEBHOOK_STORAGE_KEY);
+    const validated = stored ? validateAppsScriptWebhookUrl(stored) : null;
+    return validated || DEFAULT_WEBHOOK_URL;
   },
 
   getDeploymentId(): string {
@@ -292,10 +332,30 @@ export const busConcessionService = {
   },
 
   setSheetsWebhookUrl(url: string): void {
-    localStorage.setItem(WEBHOOK_STORAGE_KEY, url.trim());
+    const validated = validateAppsScriptWebhookUrl(url);
+    if (!validated) {
+      throw new Error('Only verified HTTPS Google Apps Script (script.google.com) webhook URLs are permitted.');
+    }
+    localStorage.setItem(WEBHOOK_STORAGE_KEY, validated);
+  },
+
+  clearLocalCache(): void {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
   },
 
   async testSheetsWebhook(url: string): Promise<{ success: boolean; message: string }> {
+    const validated = validateAppsScriptWebhookUrl(url);
+    if (!validated) {
+      return {
+        success: false,
+        message: 'Invalid webhook URL: Only verified HTTPS script.google.com endpoints are allowed.'
+      };
+    }
+
     try {
       const testPayload = {
         appliedAt: new Date().toISOString(),
@@ -314,7 +374,7 @@ export const busConcessionService = {
         hodRemarks: 'Live Google Sheets webhook connection confirmed'
       };
 
-      await fetch(url, {
+      await fetch(validated, {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -360,21 +420,21 @@ export const busConcessionService = {
 
     const rows = list.map((app, idx) => [
       idx + 1,
-      `"${app.admissionNumber}"`,
-      `"${app.studentName}"`,
-      `"${app.dateOfBirth}"`,
-      `"${app.guardianName}"`,
-      `"${app.address.replace(/"/g, '""')}"`,
-      `"${app.departmentName || SUBJECT_METADATA[app.subject]?.departmentName || ''}"`,
-      `"${app.subject}"`,
-      `"${app.courseDuration}"`,
-      `"${app.startingPoint}"`,
-      `"${app.endingPoint}"`,
+      sanitizeCsvField(app.admissionNumber),
+      sanitizeCsvField(app.studentName),
+      sanitizeCsvField(app.dateOfBirth),
+      sanitizeCsvField(app.guardianName),
+      sanitizeCsvField(app.address),
+      sanitizeCsvField(app.departmentName || SUBJECT_METADATA[app.subject]?.departmentName || ''),
+      sanitizeCsvField(app.subject),
+      sanitizeCsvField(app.courseDuration),
+      sanitizeCsvField(app.startingPoint),
+      sanitizeCsvField(app.endingPoint),
       app.distanceKm,
-      `"${app.status}"`,
-      `"${new Date(app.appliedAt).toLocaleDateString('en-IN')}"`,
-      `"${app.verifiedBy || ''}"`,
-      `"${(app.hodRemarks || app.rejectionReason || '').replace(/"/g, '""')}"`
+      sanitizeCsvField(app.status),
+      sanitizeCsvField(new Date(app.appliedAt).toLocaleDateString('en-IN')),
+      sanitizeCsvField(app.verifiedBy || ''),
+      sanitizeCsvField(app.hodRemarks || app.rejectionReason || '')
     ]);
 
     const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
@@ -386,5 +446,6 @@ export const busConcessionService = {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   }
 };

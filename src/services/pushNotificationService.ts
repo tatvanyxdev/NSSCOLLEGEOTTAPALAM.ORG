@@ -6,13 +6,19 @@ import {
   PushPriority,
   PushCategory
 } from '../types/pushNotification';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import {
+  auth as firebaseAuth,
+  db,
+  handleFirestoreError,
+  OperationType,
+  isQuotaExhaustedError,
+  markFirestoreQuotaBlocked,
+  isFirestoreOffline,
+  isConnectivityError,
+  markFirestoreTemporarilyOffline
+} from '../lib/firebase';
 import {
   collection,
-  doc,
-  setDoc,
-  deleteDoc,
-  getDocs,
   onSnapshot,
   query,
   orderBy,
@@ -30,6 +36,19 @@ const INITIAL_PUSH_NOTIFICATIONS: PushNotificationMessage[] = [];
 type PushListener = (notifications: PushNotificationMessage[]) => void;
 type NewArrivalListener = (notification: PushNotificationMessage) => void;
 
+function secureRandomToken(length: number = 8): string {
+  const alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
+  const bytes = new Uint8Array(length);
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes);
+  }
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    out += alphabet[bytes[i] % alphabet.length];
+  }
+  return out;
+}
+
 class PushNotificationService {
   private notifications: PushNotificationMessage[] = [];
   private readIds: Set<string> = new Set();
@@ -40,10 +59,26 @@ class PushNotificationService {
   private lastKnownIdSet: Set<string> = new Set();
 
   constructor() {
-    this.purgeLegacySeedDocs();
     this.loadFromStorage();
     this.loadReadIds();
+    if (typeof window !== 'undefined') {
+      window.addEventListener('nss-auth-logout', () => {
+        this.stopFirestoreSync();
+        this.clearAllNotifications();
+      });
+    }
+  }
+
+  startFirestoreSync(): void {
+    if (this.unsubscribeFirestore || isFirestoreOffline()) return;
     this.initFirestoreListener();
+  }
+
+  stopFirestoreSync(): void {
+    if (this.unsubscribeFirestore) {
+      this.unsubscribeFirestore();
+      this.unsubscribeFirestore = null;
+    }
   }
 
   // ==========================================
@@ -185,6 +220,7 @@ class PushNotificationService {
   // ==========================================
   private initFirestoreListener(): void {
     if (typeof window === 'undefined') return;
+    if (!firebaseAuth.currentUser || !firebaseAuth.currentUser.emailVerified) return;
     try {
       const q = query(
         collection(db, FIRESTORE_COLLECTION),
@@ -204,10 +240,7 @@ class PushNotificationService {
           snapshot.forEach((d) => {
             const data = d.data() as PushNotificationMessage;
             if (data && data.id && data.title) {
-              if (data.id.startsWith('push-seed-') || data.id.includes('demo') || data.id.includes('seed')) {
-                // Asynchronously purge obsolete demo seed doc from Firestore
-                deleteDoc(doc(db, FIRESTORE_COLLECTION, data.id)).catch(() => {});
-              } else {
+              if (!data.id.startsWith('push-seed-') && !data.id.includes('demo') && !data.id.includes('seed')) {
                 remoteList.push(data);
               }
             }
@@ -248,20 +281,26 @@ class PushNotificationService {
           }
         },
         (error) => {
-          handleFirestoreError(error, OperationType.GET, FIRESTORE_COLLECTION);
+          if (isQuotaExhaustedError(error)) {
+            markFirestoreQuotaBlocked(error);
+            return;
+          }
+          if (isConnectivityError(error)) {
+            markFirestoreTemporarilyOffline();
+            this.stopFirestoreSync();
+            return;
+          }
+          const msg = error?.message || String(error);
+          if (/permission|insufficient/i.test(msg)) {
+            handleFirestoreError(error, OperationType.GET, FIRESTORE_COLLECTION);
+          } else {
+            console.warn('Push notification listener warning:', msg);
+          }
         }
       );
     } catch (err) {
       console.warn('Could not initialize push notification Firestore listener:', err);
     }
-  }
-
-  // Purge any legacy demo push seed docs from Firestore
-  private purgeLegacySeedDocs(): void {
-    const seedIds = ['push-seed-001', 'push-seed-002', 'push-seed-003', 'push-seed-004'];
-    seedIds.forEach(id => {
-      deleteDoc(doc(db, FIRESTORE_COLLECTION, id)).catch(() => {});
-    });
   }
 
   // ==========================================
@@ -273,7 +312,7 @@ class PushNotificationService {
     error?: string;
   }> {
     try {
-      const id = `push-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      const id = `push-${Date.now()}-${secureRandomToken(6)}`;
       const newNotification: PushNotificationMessage = {
         id,
         title: payload.title.trim(),
@@ -293,7 +332,7 @@ class PushNotificationService {
         deliveredCount: 1
       };
 
-      // Add to local state first for instant responsiveness
+      // Add to local state for instant responsiveness
       this.lastKnownIdSet.add(id);
       this.notifications = [newNotification, ...this.notifications];
       this.saveToStorage();
@@ -303,13 +342,6 @@ class PushNotificationService {
       this.playChime();
       this.triggerBrowserNotification(newNotification);
       this.newArrivalSubscribers.forEach((cb) => cb(newNotification));
-
-      // Persist to Firebase Firestore for cross-client real-time delivery
-      try {
-        await setDoc(doc(db, FIRESTORE_COLLECTION, id), newNotification);
-      } catch (firestoreErr) {
-        console.warn('Firestore write failed, falling back to local sync:', firestoreErr);
-      }
 
       return { success: true, notification: newNotification };
     } catch (err: any) {

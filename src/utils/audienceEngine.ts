@@ -66,15 +66,6 @@ export function resolveUserAcademicContext(params: {
         ) || null;
     }
 
-    if (!student && students.length > 0) {
-      // In dev or preview if user selected Student role but haven't linked:
-      // check if user has custom selection saved or default to null so user can select their authentic profile
-      const storedStudentId = localStorage.getItem('nss_active_student_id');
-      if (storedStudentId) {
-        student = students.find(s => s.id === storedStudentId) || null;
-      }
-    }
-
     if (student) {
       // Find latest semester enrollment
       const studentEnrollments = semesterEnrollments.filter(e => e.studentId === student!.id);

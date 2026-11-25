@@ -32,6 +32,7 @@ import { ProgrammesView } from './components/views/ProgrammesView';
 import { CourseCategoriesView } from './components/views/CourseCategoriesView';
 import { CoursesMasterView } from './components/views/CoursesMasterView';
 import { StudentsManagerView } from './components/views/StudentsManagerView';
+import { OnboardedStudentsDirectoryView } from './components/views/OnboardedStudentsDirectoryView';
 import { CourseRegistrationsView } from './components/views/CourseRegistrationsView';
 import { FacultyManagerView } from './components/views/FacultyManagerView';
 import { StaffEnrollmentView } from './components/views/StaffEnrollmentView';
@@ -59,6 +60,7 @@ const tabTitles: Record<string, string> = {
   'course-categories': 'Course Categories',
   courses: 'Courses Master',
   students: '1. Student Enrollment',
+  'onboarded-students': 'Onboarded Students Directory',
   'staff-enrollment': '2. Staff & Faculty Enrollment',
   registrations: 'Course & Subject Allocations',
   faculty: 'Staff & Faculty Directory',
@@ -225,6 +227,11 @@ const MainLayout: React.FC = () => {
             }
           />
         );
+      case 'onboarded-students':
+        if (activeRole === 'STUDENT') {
+          return <DashboardView onNavigate={setActiveTab} />;
+        }
+        return <OnboardedStudentsDirectoryView />;
       case 'registrations':
         return <CourseRegistrationsView />;
       case 'staff-enrollment':

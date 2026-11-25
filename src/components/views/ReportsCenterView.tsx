@@ -239,9 +239,9 @@ export const ReportsCenterView: React.FC = () => {
     setTimeout(() => setFeedbackBanner(null), 3500);
   };
 
-  const handleExportWorkbook = () => {
+  const handleExportWorkbook = async () => {
     try {
-      const filename = exportAttendanceToExcelWorkbook(report, {
+      const filename = await exportAttendanceToExcelWorkbook(report, {
         collegeName: settings.collegeName || 'NSS College Ottapalam',
         scopeSummary: activeScopeSummary,
         minPercentage: settings.minAttendancePercentage

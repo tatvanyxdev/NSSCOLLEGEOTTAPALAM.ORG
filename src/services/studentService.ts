@@ -52,13 +52,15 @@ export const studentService = {
         university_register_number: student.universityRegisterNumber || null,
         full_name: student.fullName,
         username: student.username || student.admissionNumber,
-        password: student.password || 'Student@123',
+        password: student.password || null,
         email: student.email || null,
         mobile_number: mobile,
         phone: mobile,
         home_department_id: verifiedDeptId,
         programme_id: verifiedProgId,
         current_semester: Number(student.currentSemester) || 1,
+        year_of_study: Number(student.yearOfStudy) || Math.ceil((Number(student.currentSemester) || 1) / 2),
+        admission_batch: student.admissionBatch || null,
         blood_group: student.bloodGroup || null,
         status: student.status || 'ACTIVE'
       };
@@ -94,6 +96,8 @@ export const studentService = {
         payload.programme_id = await safeProgrammeId(student.programmeId);
       }
       if (student.currentSemester !== undefined) payload.current_semester = Number(student.currentSemester);
+      if (student.yearOfStudy !== undefined) payload.year_of_study = Number(student.yearOfStudy);
+      if (student.admissionBatch !== undefined) payload.admission_batch = student.admissionBatch;
       if (student.bloodGroup !== undefined) payload.blood_group = student.bloodGroup;
       if (student.status !== undefined) payload.status = student.status;
 
@@ -154,14 +158,13 @@ export const studentService = {
       // 5. Delete student record from students table
       const { error } = await supabase.from('students').delete().eq('id', validId);
       if (error) {
-        console.warn('Supabase student delete warning:', error.message);
+        return { success: false, error: new Error(error.message) };
       }
 
       return { success: true, error: null };
     } catch (err: any) {
-      console.warn('Supabase studentService.deleteStudent fallback:', err?.message || err);
-      // Return success true so local state can still delete even if remote is offline or item is local mock
-      return { success: true, error: null };
+      console.warn('Supabase studentService.deleteStudent error:', err?.message || err);
+      return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
     }
   },
 

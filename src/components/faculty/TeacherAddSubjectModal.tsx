@@ -111,7 +111,12 @@ export const TeacherAddSubjectModal: React.FC<TeacherAddSubjectModalProps> = ({
   // Auto-generate preview temporary code if provisional
   const generatedTempCode = useMemo(() => {
     if (courseSelectionMode === 'PROVISIONAL' && !proposedCourseCode) {
-      return `TEMP-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+      const buf = new Uint32Array(1);
+      if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+        crypto.getRandomValues(buf);
+      }
+      const num = 1000 + (buf[0] % 9000);
+      return `TEMP-2026-${num}`;
     }
     return proposedCourseCode;
   }, [courseSelectionMode, proposedCourseCode]);

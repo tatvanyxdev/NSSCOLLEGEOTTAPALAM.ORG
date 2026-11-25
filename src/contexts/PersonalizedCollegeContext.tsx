@@ -180,17 +180,14 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
     announcements
   } = useCollegeData();
 
-  // Active student selection override (for easy testing between enrolled students if not hard linked)
-  const [selectedStudentId, setSelectedStudentId] = useState<string>(() => {
-    return localStorage.getItem('nss_active_student_id') || 'stu-1';
-  });
+  // Active student inspection override (in-memory only, strictly for SUPER_ADMIN)
+  const [selectedStudentId, setSelectedStudentId] = useState<string>('');
 
   const switchActiveStudent = (studentId: string) => {
-    if (!user?.isDemoRole && activeRole !== 'SUPER_ADMIN') {
+    if (activeRole !== 'SUPER_ADMIN') {
       return;
     }
     setSelectedStudentId(studentId);
-    localStorage.setItem('nss_active_student_id', studentId);
   };
 
   // 1. Resolve Academic Context
@@ -215,8 +212,8 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
       if (match) return match;
     }
 
-    // Allow switcher fallback only for demo preview / super admin inspection
-    if (user?.isDemoRole || activeRole === 'SUPER_ADMIN') {
+    // Allow switcher fallback strictly for Super Admin inspection
+    if (activeRole === 'SUPER_ADMIN') {
       return students.find(s => s.id === selectedStudentId) || students[0] || null;
     }
 
@@ -231,9 +228,7 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
           f.id === user?.id ||
           (f.username && user?.name && f.username.toLowerCase() === user.name.toLowerCase()) ||
           (user?.email && f.email && f.email.toLowerCase() === user.email.toLowerCase())
-      ) ||
-      faculty[0] ||
-      null
+      ) || null
     );
   }, [activeRole, user, faculty]);
 
@@ -288,8 +283,38 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
     return saved ? JSON.parse(saved) : initialTimetableChangeAlerts;
   });
 
-  // Background sync with Supabase when available
+  // Clear personalized cached data upon logout
   useEffect(() => {
+    const handleLogoutPurge = () => {
+      try {
+        localStorage.removeItem('nss_active_student_id');
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(STORAGE_PREFIX)) {
+            localStorage.removeItem(k);
+          }
+        }
+      } catch {
+        // ignore storage cleanup errors
+      }
+      setSelectedStudentId('');
+      setCirculars([]);
+      setLeaveRequests([]);
+      setCertificateRequests([]);
+      setAcademicEvents([]);
+      setAcademicResources([]);
+      setEmergencyAlerts([]);
+      setDismissedAlertIds([]);
+      setTimetableChangeAlerts([]);
+    };
+
+    window.addEventListener('nss-auth-logout', handleLogoutPurge);
+    return () => window.removeEventListener('nss-auth-logout', handleLogoutPurge);
+  }, []);
+
+  // Background sync with Supabase when authenticated
+  useEffect(() => {
+    if (!user?.id) return;
     let isMounted = true;
     const fetchRemoteData = async () => {
       try {
@@ -328,8 +353,8 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
             localStorage.setItem(`${STORAGE_PREFIX}emergency_alerts`, JSON.stringify(alertRes.data));
           }
         }
-      } catch (err) {
-        // Fallback gracefully to local storage
+      } catch {
+        // Fallback gracefully
       }
     };
 
@@ -337,11 +362,12 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [user?.id]);
 
   // 3. Action Handlers
   const acknowledgeCircular = async (circularId: string) => {
-    const studentId = currentStudent?.id || user?.id || 'stu-1';
+    const studentId = currentStudent?.id || user?.id;
+    if (!studentId) return { success: false, error: 'Authenticated user required.' };
     const target = circulars.find(c => c.id === circularId);
     if (!target) return { success: false, error: 'Circular not found' };
 
@@ -368,41 +394,29 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
   ): Promise<{ success: boolean; data?: Circular; error?: string }> => {
     try {
       const res = await personalizedModulesService.createCircular(circular);
-      const created = res.data || {
-        ...circular,
-        id: `circ-${Date.now()}`,
-        createdAt: new Date().toISOString()
-      };
+      if (!res.data) {
+        return { success: false, error: 'Database did not return the created circular.' };
+      }
 
-      const updated = [created, ...circulars];
+      const updated = [res.data, ...circulars];
       setCirculars(updated);
       localStorage.setItem(`${STORAGE_PREFIX}circulars`, JSON.stringify(updated));
 
-      return { success: true, data: created };
+      return { success: true, data: res.data };
     } catch (err: any) {
-      console.warn('issueCircular fallback:', err?.message || err);
-      const fallback: Circular = {
-        ...circular,
-        id: `circ-${Date.now()}`,
-        createdAt: new Date().toISOString()
-      };
-      const updated = [fallback, ...circulars];
-      setCirculars(updated);
-      localStorage.setItem(`${STORAGE_PREFIX}circulars`, JSON.stringify(updated));
-      return { success: true, data: fallback };
+      return { success: false, error: err?.message || 'Failed to publish circular to database.' };
     }
   };
 
   const deleteCircular = async (id: string): Promise<{ success: boolean; error?: string }> => {
     try {
+      await personalizedModulesService.deleteCircular(id);
       const updated = circulars.filter(c => c.id !== id);
       setCirculars(updated);
       localStorage.setItem(`${STORAGE_PREFIX}circulars`, JSON.stringify(updated));
-
-      await personalizedModulesService.deleteCircular(id);
       return { success: true };
     } catch (err: any) {
-      return { success: true };
+      return { success: false, error: err?.message || 'Failed to delete circular.' };
     }
   };
 
@@ -431,7 +445,10 @@ export const PersonalizedCollegeProvider: React.FC<{ children: React.ReactNode }
     status: 'APPROVED' | 'REJECTED',
     remarks?: string
   ) => {
-    const facultyId = currentFaculty?.id || user?.id || 'fac-1';
+    const facultyId = currentFaculty?.id || user?.id;
+    if (!facultyId) {
+      return { success: false, error: 'Authenticated staff identity required.' };
+    }
     const facultyName = currentFaculty?.fullName || user?.name || 'Class Tutor';
 
     const updated = leaveRequests.map(r =>

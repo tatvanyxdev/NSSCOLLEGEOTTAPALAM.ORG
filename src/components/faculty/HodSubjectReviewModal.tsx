@@ -69,9 +69,14 @@ export const HodSubjectReviewModal: React.FC<HodSubjectReviewModalProps> = ({
   const [isProvisionalApproval, setIsProvisionalApproval] = useState<boolean>(
     request.isProvisional || !request.existingCourseId
   );
-  const [confirmedCourseCode, setConfirmedCourseCode] = useState<string>(
-    request.proposedCourseCode || `TEMP-2026-${Math.floor(1000 + Math.random() * 9000)}`
-  );
+  const [confirmedCourseCode, setConfirmedCourseCode] = useState<string>(() => {
+    if (request.proposedCourseCode) return request.proposedCourseCode;
+    const buf = new Uint32Array(1);
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      crypto.getRandomValues(buf);
+    }
+    return `TEMP-2026-${1000 + (buf[0] % 9000)}`;
+  });
   const [confirmedCourseName, setConfirmedCourseName] = useState<string>(request.courseName);
   const [selectedOfferingId, setSelectedOfferingId] = useState<string>('');
   const [selectedGroupId, setSelectedGroupId] = useState<string>(request.existingCourseGroupId || '');

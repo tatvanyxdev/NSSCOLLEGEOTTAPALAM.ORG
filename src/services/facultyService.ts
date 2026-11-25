@@ -155,14 +155,13 @@ export const facultyService = {
       // 6. Delete faculty member from faculty table
       const { error } = await supabase.from('faculty').delete().eq('id', validId);
       if (error) {
-        console.warn('Supabase faculty delete warning:', error.message);
+        return { success: false, error: new Error(error.message) };
       }
 
       return { success: true, error: null };
     } catch (err: any) {
-      console.warn('Supabase facultyService.deleteFaculty fallback:', err?.message || err);
-      // Return success true so local state can still delete even if remote is offline or item is local mock
-      return { success: true, error: null };
+      console.warn('Supabase facultyService.deleteFaculty error:', err?.message || err);
+      return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
     }
   },
 

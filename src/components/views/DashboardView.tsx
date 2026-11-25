@@ -57,6 +57,7 @@ import {
   CartesianGrid
 } from 'recharts';
 import { ClassSession } from '../../types';
+import { inferPeriodSession } from '../../utils/dualAttendanceEngine';
 
 interface DashboardViewProps {
   setActiveTab?: (tab: string) => void;
@@ -72,6 +73,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
     programmes,
     students,
     faculty,
+    facultyAssignments,
     courses,
     courseCategories,
     courseGroups,
@@ -87,6 +89,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
     dailyScheduleOverrides,
     getDailyScheduledClasses,
     getOrCreateSessionForTimetableEntry,
+    addClassSession,
     cancelScheduledClass,
     specialAttendanceEvents,
     updateSpecialAttendanceStatus
@@ -118,6 +121,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
   const currentFaculty = faculty.find(
     f => f.id === user?.id || (user?.email && f.email?.toLowerCase() === user.email.toLowerCase())
   );
+  const effectiveTeacherId = currentFaculty?.id || user?.id;
   const isHOD = activeRole === 'HOD';
   const hodDeptId = isHOD
     ? user?.departmentId ||
@@ -127,16 +131,49 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
       )?.id
     : undefined;
 
-  // Today's date string
-  const todayDateStr = new Date().toISOString().split('T')[0];
+  // Local calendar date (YYYY-MM-DD)
+  const nowLocal = new Date();
+  const todayDateStr = `${nowLocal.getFullYear()}-${String(nowLocal.getMonth() + 1).padStart(2, '0')}-${String(nowLocal.getDate()).padStart(2, '0')}`;
+  const [teacherDateStr, setTeacherDateStr] = useState<string>(todayDateStr);
 
-  // Timetable-driven scheduled classes for today (including substitutes, regular & extras)
-  const teacherScheduledClasses = getDailyScheduledClasses(todayDateStr, user?.id);
+  // Quick-mark state (select any assigned subject + period directly on dashboard)
+  const teachingPeriods = timetablePeriods
+    .filter(p => !p.isBreak && p.periodNumber !== 0)
+    .sort((a, b) => a.periodNumber - b.periodNumber);
+  const teacherAssignedGroups = facultyAssignments
+    .filter(fa => effectiveTeacherId && fa.facultyId === effectiveTeacherId && fa.isActive !== false)
+    .map(fa => {
+      const group = courseGroups.find(g => g.id === fa.courseGroupId);
+      const offering = courseOfferings.find(
+        o => o.id === fa.courseOfferingId || o.id === group?.courseOfferingId
+      );
+      const course = courses.find(c => c.id === offering?.courseId);
+      return { assignment: fa, group, offering, course };
+    })
+    .filter(item => item.group && item.offering && item.course);
+
+  const [quickGroupId, setQuickGroupId] = useState<string>('');
+  const [quickPeriodId, setQuickPeriodId] = useState<string>('');
+  const [isOpeningQuickMark, setIsOpeningQuickMark] = useState(false);
+  const [quickMarkError, setQuickMarkError] = useState<string | null>(null);
+
+  const resolvedQuickGroupId =
+    quickGroupId && teacherAssignedGroups.some(g => g.group?.id === quickGroupId)
+      ? quickGroupId
+      : teacherAssignedGroups[0]?.group?.id || '';
+  const resolvedQuickPeriodId =
+    quickPeriodId && teachingPeriods.some(p => p.id === quickPeriodId)
+      ? quickPeriodId
+      : teachingPeriods[0]?.id || '';
+
+  // Timetable-driven scheduled classes for selected date (including substitutes, regular & extras)
+  const teacherScheduledClasses = getDailyScheduledClasses(teacherDateStr, effectiveTeacherId);
   const teacherPendingClasses = teacherScheduledClasses.filter(c => c.isPending);
   const teacherConductedClasses = teacherScheduledClasses.filter(c => c.isConducted);
 
-  // Lazy instantiate session on-demand when teacher clicks 'Mark Attendance'
+  // Lazy instantiate session on-demand when teacher clicks 'Mark'
   const handleOpenAttendanceForScheduledClass = async (item: any) => {
+    setQuickMarkError(null);
     try {
       if (item.session) {
         setSelectedSessionForAttendance(item.session);
@@ -144,21 +181,109 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
       }
       if (item.timetableEntry) {
         setLoadingSessionKey(item.timetableEntry.id);
-        const sess = await getOrCreateSessionForTimetableEntry(item.timetableEntry.id, todayDateStr);
+        const sess = await getOrCreateSessionForTimetableEntry(item.timetableEntry.id, teacherDateStr);
         setSelectedSessionForAttendance(sess);
       }
     } catch (err: any) {
-      console.error('Failed to open attendance session:', err);
+      setQuickMarkError(err?.message || 'Could not open attendance session.');
     } finally {
       setLoadingSessionKey(null);
     }
+  };
+
+  // Direct Subject + Period Quick Mark right from dashboard
+  const handleOpenQuickMarkSession = async () => {
+    setQuickMarkError(null);
+    if (!resolvedQuickGroupId || !resolvedQuickPeriodId) {
+      setQuickMarkError('Select a subject and period first.');
+      return;
+    }
+
+    // Check if an active session already exists for this group + date + period
+    const existingSess = classSessions.find(
+      s =>
+        s.courseGroupId === resolvedQuickGroupId &&
+        s.date === teacherDateStr &&
+        s.periodId === resolvedQuickPeriodId &&
+        s.status !== 'CANCELLED'
+    );
+    if (existingSess) {
+      setSelectedSessionForAttendance(existingSess);
+      return;
+    }
+
+    // Check if a scheduled timetable slot matches this group + period
+    const scheduledMatch = teacherScheduledClasses.find(
+      c =>
+        c.courseGroup?.id === resolvedQuickGroupId &&
+        c.period?.id === resolvedQuickPeriodId &&
+        !c.isCancelled
+    );
+    if (scheduledMatch) {
+      await handleOpenAttendanceForScheduledClass(scheduledMatch);
+      return;
+    }
+
+    const chosen = teacherAssignedGroups.find(g => g.group?.id === resolvedQuickGroupId);
+    const period = teachingPeriods.find(p => p.id === resolvedQuickPeriodId);
+    if (!chosen?.offering || !chosen.group || !period) {
+      setQuickMarkError('Selected subject or period metadata is incomplete.');
+      return;
+    }
+
+    setIsOpeningQuickMark(true);
+    try {
+      const res = await addClassSession({
+        courseOfferingId: chosen.offering.id,
+        courseGroupId: chosen.group.id,
+        facultyId: effectiveTeacherId || chosen.assignment.facultyId,
+        periodId: period.id,
+        date: teacherDateStr,
+        startTime: period.startTime || '09:30',
+        endTime: period.endTime || '10:30',
+        room: chosen.group.room || 'LH-101',
+        topicCovered: '',
+        sessionType: 'EXTRA',
+        sessionSource: 'EXTRA',
+        status: 'SCHEDULED',
+        attendanceSubmitted: false
+      });
+
+      if (!res.success || !res.data) {
+        setQuickMarkError(res.error || 'Could not start attendance session.');
+        return;
+      }
+      setSelectedSessionForAttendance(res.data);
+    } catch (err: any) {
+      setQuickMarkError(err?.message || 'Could not start attendance session.');
+    } finally {
+      setIsOpeningQuickMark(false);
+    }
+  };
+
+  // One-click handler from My Teaching Subjects list
+  const handleMarkSubjectFromList = async (_offeringId: string, courseGroupId: string) => {
+    setQuickMarkError(null);
+    const matchingScheduled = teacherScheduledClasses.find(
+      c => c.courseGroup?.id === courseGroupId && !c.isCancelled && c.isPending
+    ) || teacherScheduledClasses.find(
+      c => c.courseGroup?.id === courseGroupId && !c.isCancelled
+    );
+
+    if (matchingScheduled) {
+      await handleOpenAttendanceForScheduledClass(matchingScheduled);
+      return;
+    }
+
+    setQuickGroupId(courseGroupId);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleConfirmCancelClass = async () => {
     if (!cancelModalItem || !cancelReason.trim()) return;
     setIsCancelling(true);
     setCancelError(null);
-    const res = await cancelScheduledClass(cancelModalItem.timetableEntry.id, todayDateStr, cancelReason.trim(), user?.id);
+    const res = await cancelScheduledClass(cancelModalItem.timetableEntry.id, teacherDateStr, cancelReason.trim(), effectiveTeacherId);
     setIsCancelling(false);
     if (!res.success) {
       setCancelError(res.error || 'Failed to cancel scheduled class.');
@@ -460,222 +585,283 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
   }
 
   // ==========================================
-  // 2. TEACHER DASHBOARD VIEW
+  // 2. TEACHER / CLASS TUTOR COMPACT DASHBOARD
   // ==========================================
   if (activeRole === 'TEACHER' || activeRole === 'CLASS_TUTOR') {
+    const teacherDeptName =
+      departments.find(d => d.id === (user?.departmentId || currentFaculty?.departmentId))?.name ||
+      'NSS College Ottapalam';
+    const scopedTeacherCorrectionsCount = correctionRequests.filter(r => {
+      const actorIds = new Set([user?.id, currentFaculty?.id].filter(Boolean) as string[]);
+      const sess = classSessions.find(cs => cs.id === r.classSessionId);
+      return (
+        r.status === 'PENDING' &&
+        ((r.requestedByFacultyId && actorIds.has(r.requestedByFacultyId)) ||
+          (sess?.facultyId && actorIds.has(sess.facultyId)) ||
+          (sess?.substituteFacultyId && actorIds.has(sess.substituteFacultyId)))
+      );
+    }).length;
+
     return (
-      <div className="space-y-6">
-        {/* Welcome Header */}
-        <div className="relative overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 text-white p-4 sm:p-6 shadow-sm w-full min-w-0 flex flex-col md:flex-row md:items-center justify-between gap-5">
-          {/* Subtle Institutional Background Glow */}
-          <div className="pointer-events-none absolute -right-12 -top-12 w-48 h-48 rounded-full bg-blue-600/10 blur-3xl" />
-          <div className="pointer-events-none absolute -left-12 -bottom-12 w-48 h-48 rounded-full bg-amber-500/10 blur-3xl" />
-
-          <div className="relative z-10 min-w-0 flex-1 w-full space-y-1">
-            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-300 border border-blue-400/25 text-[11px] font-bold uppercase tracking-wider">
-                <BookOpen className="w-3.5 h-3.5 text-blue-300 shrink-0" />
-                {activeRole === 'CLASS_TUTOR' ? 'Class Tutor & Faculty' : 'Faculty'}
-              </span>
-              <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-400/25 text-[11px] font-bold font-mono">
-                AY {settings.activeAcademicYear}
-              </span>
+      <div className="space-y-4">
+        {/* Compact Teacher Summary Strip */}
+        <div className="bg-white rounded-xl border border-slate-200 px-4 py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+              <span>{activeRole === 'CLASS_TUTOR' ? 'Class Tutor' : 'Faculty'}</span>
+              <span aria-hidden="true">·</span>
+              <span>{teacherDeptName}</span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono tabular-nums">AY {settings.activeAcademicYear}</span>
             </div>
-
-            <h2 className="text-xl sm:text-2xl font-bold font-display tracking-tight text-white leading-tight">
-              {user?.name || 'Faculty Member'}
+            <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight truncate mt-0.5">
+              {currentFaculty?.fullName || user?.name || 'Faculty Member'}
             </h2>
-
-            <p className="text-xs text-slate-300 font-medium">
-              {user?.departmentId ? departments.find(d => d.id === user.departmentId)?.name : 'NSS College Ottapalam'}
-            </p>
           </div>
 
-          <div className="relative z-10 flex items-center gap-2 w-full md:w-auto shrink-0 pt-3 md:pt-0 border-t md:border-t-0 border-slate-800/80">
+          <div className="flex flex-wrap items-center gap-3 sm:gap-5 pt-2 md:pt-0 border-t md:border-t-0 border-slate-100">
+            <div className="flex items-center gap-4 text-xs tabular-nums">
+              <div>
+                <span className="text-slate-500">Pending </span>
+                <span className={`font-bold ${teacherPendingClasses.length > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                  {teacherPendingClasses.length}
+                </span>
+              </div>
+              <span className="text-slate-200">|</span>
+              <div>
+                <span className="text-slate-500">Marked </span>
+                <span className="font-bold text-emerald-700">{teacherConductedClasses.length}</span>
+              </div>
+              <span className="text-slate-200">|</span>
+              <div>
+                <span className="text-slate-500">Corrections </span>
+                <span className="font-bold text-slate-800">{scopedTeacherCorrectionsCount}</span>
+              </div>
+            </div>
+
             <button
+              type="button"
               onClick={() => navigateTo('attendance')}
-              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-2xs transition-all min-h-[40px]"
+              className="px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
             >
-              <CalendarCheck className="w-4 h-4 shrink-0" /> Attendance
+              <CalendarCheck className="w-3.5 h-3.5 shrink-0" />
+              <span>Attendance Hub</span>
             </button>
           </div>
         </div>
 
-        {/* 1. FIRST ACTION: My Teaching Subjects & Registration Queue */}
-        <TeacherSubjectsCard onNavigateToAttendance={() => navigateTo('attendance')} />
-
-        {/* Teacher Stat Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard
-            title="Scheduled Today"
-            value={teacherScheduledClasses.length}
-            icon={<Clock className="w-5 h-5" />}
-            color="blue"
-          />
-          <StatCard
-            title="Pending Attendance"
-            value={teacherPendingClasses.length}
-            subtitle={teacherPendingClasses.length > 0 ? "Requires submission" : "All marked"}
-            icon={<AlertTriangle className="w-5 h-5" />}
-            color={teacherPendingClasses.length > 0 ? "rose" : "emerald"}
-          />
-          <StatCard
-            title="Conducted Today"
-            value={teacherConductedClasses.length}
-            icon={<CheckCircle2 className="w-5 h-5" />}
-            color="emerald"
-          />
-          <StatCard
-            title="Corrections"
-            value={correctionRequests.filter(r => {
-              const actorIds = new Set([user?.id, currentFaculty?.id].filter(Boolean) as string[]);
-              const sess = classSessions.find(cs => cs.id === r.classSessionId);
-              return (
-                (r.requestedByFacultyId && actorIds.has(r.requestedByFacultyId)) ||
-                (sess?.facultyId && actorIds.has(sess.facultyId)) ||
-                (sess?.substituteFacultyId && actorIds.has(sess.substituteFacultyId))
-              );
-            }).length}
-            icon={<FileSpreadsheet className="w-5 h-5" />}
-            color="amber"
-          />
-        </div>
-
-        {/* Today's Teaching Schedule */}
-        <div className="bg-white rounded-xl p-5 sm:p-6 border border-slate-200 shadow-2xs">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+        {/* Primary Card: Direct Attendance Marking from Dashboard */}
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2.5 bg-slate-50/60">
             <div>
-              <h3 className="text-sm font-bold text-slate-900 uppercase tracking-tight">Today's Classes</h3>
+              <h3 className="text-sm font-bold text-slate-900">Quick Attendance</h3>
+              <p className="text-xs text-slate-500">
+                Mark scheduled periods or pick any assigned subject below.
+              </p>
             </div>
+
             <div className="flex items-center gap-2">
-              <span className="text-xs font-mono font-bold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">
-                {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
-              </span>
+              <div className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-lg border border-slate-300">
+                <Calendar className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                <input
+                  type="date"
+                  value={teacherDateStr}
+                  onChange={e => setTeacherDateStr(e.target.value || todayDateStr)}
+                  className="text-xs font-mono font-semibold text-slate-800 bg-transparent border-none focus:outline-none"
+                />
+              </div>
+              {teacherDateStr !== todayDateStr && (
+                <button
+                  type="button"
+                  onClick={() => setTeacherDateStr(todayDateStr)}
+                  className="px-2.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold cursor-pointer whitespace-nowrap"
+                >
+                  Today
+                </button>
+              )}
             </div>
           </div>
 
-          <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
+          {/* 1-Line Quick Mark Bar for any Subject + Period */}
+          {teacherAssignedGroups.length > 0 && teachingPeriods.length > 0 && (
+            <div className="px-4 py-3 border-b border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center gap-2">
+              <select
+                aria-label="Select subject"
+                value={resolvedQuickGroupId}
+                onChange={e => {
+                  setQuickGroupId(e.target.value);
+                  setQuickMarkError(null);
+                }}
+                className="flex-1 min-w-0 text-xs px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {teacherAssignedGroups.map(({ group, course }) => (
+                  <option key={group!.id} value={group!.id}>
+                    {course!.courseCode} · {course!.courseTitle} ({group!.groupName})
+                  </option>
+                ))}
+              </select>
+
+              <select
+                aria-label="Select period"
+                value={resolvedQuickPeriodId}
+                onChange={e => {
+                  setQuickPeriodId(e.target.value);
+                  setQuickMarkError(null);
+                }}
+                className="sm:w-44 text-xs px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 font-mono font-medium focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {teachingPeriods.map(p => {
+                  const slot = inferPeriodSession(p, p.id);
+                  return (
+                    <option key={p.id} value={p.id}>
+                      {p.label} ({slot}) · {p.startTime}
+                    </option>
+                  );
+                })}
+              </select>
+
+              <button
+                type="button"
+                disabled={isOpeningQuickMark}
+                onClick={handleOpenQuickMarkSession}
+                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+              >
+                {isOpeningQuickMark ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Opening...</span>
+                  </>
+                ) : (
+                  <>
+                    <CalendarCheck className="w-3.5 h-3.5" />
+                    <span>Take Attendance</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+
+          {quickMarkError && (
+            <div className="mx-4 mt-3 px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800 font-medium">
+              {quickMarkError}
+            </div>
+          )}
+
+          {/* Compact Scheduled Periods List */}
+          <div className="divide-y divide-slate-100">
             {teacherScheduledClasses.length === 0 ? (
-              <div className="p-8 text-center text-slate-500 text-sm">
-                No classes scheduled today.
+              <div className="px-4 py-6 text-center text-slate-500 text-xs">
+                No timetable classes scheduled for{' '}
+                <span className="font-mono font-semibold text-slate-700">{teacherDateStr}</span>.
+                {teacherAssignedGroups.length > 0 && ' Pick a subject and period above to mark attendance.'}
               </div>
             ) : (
               teacherScheduledClasses.map((item, idx) => {
                 const isLoadingThis = loadingSessionKey === item.timetableEntry?.id;
+                const slot = inferPeriodSession(item.period, item.session?.periodId);
 
                 return (
-                  <div key={item.timetableEntry?.id || item.session?.id || idx} className="p-3.5 sm:p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4 hover:bg-slate-50 transition-colors">
-                    <div className="flex items-start gap-3 sm:gap-3.5 min-w-0 flex-1">
-                      <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-lg bg-blue-50 border border-blue-100 flex flex-col items-center justify-center font-mono text-blue-900 shrink-0">
-                        <span className="text-[9px] font-bold uppercase">{item.period?.label?.split(' ')[0] || 'Period'}</span>
-                        <span className="text-xs sm:text-sm font-black">{item.period?.label?.split(' ')[1] || item.period?.periodNumber || (idx + 1)}</span>
+                  <div
+                    key={item.timetableEntry?.id || item.session?.id || idx}
+                    className={`px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-colors ${
+                      item.isCancelled ? 'bg-slate-50/70 opacity-70' : 'hover:bg-slate-50/70'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className="w-14 shrink-0 text-left font-mono tabular-nums">
+                        <div className="text-xs font-bold text-slate-900">
+                          {item.period?.label || `P${item.period?.periodNumber || idx + 1}`}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {slot} · {item.period?.startTime || '09:30'}
+                        </div>
                       </div>
 
                       <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                          {item.category && (
-                            <span
-                              className="px-2 py-0.5 rounded text-[10px] font-bold text-white uppercase"
-                              style={{ backgroundColor: item.category.colorHex || '#2563eb' }}
-                            >
-                              {item.category.name}
-                            </span>
-                          )}
-                          <span className="text-xs font-bold text-slate-900">{item.course?.courseCode}</span>
-                          <span className="text-xs text-slate-500 font-medium truncate">
-                            • {item.courseGroup?.groupName} ({item.room || item.courseGroup?.room || 'LH-101'})
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          <span className="text-xs font-mono font-bold text-slate-900">
+                            {item.course?.courseCode}
                           </span>
-
-                          {item.isSubstitute && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
-                              <UserCheck className="w-3 h-3" />
-                              Substitute (for {item.scheduledFaculty?.fullName})
-                            </span>
-                          )}
-
-                          {item.isExtra && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                              Extra Class
-                            </span>
-                          )}
+                          <span className="text-xs sm:text-sm font-semibold text-slate-900 truncate">
+                            {item.course?.courseTitle}
+                          </span>
                         </div>
-
-                        <h4 className="text-xs sm:text-sm font-bold text-slate-900 mt-1 break-words">{item.course?.courseTitle}</h4>
-                        <p className="text-[11px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-x-2">
-                          <span>Timing: {item.period?.startTime || '09:30'} - {item.period?.endTime || '10:30'}</span>
-                          {item.isCancelled ? (
-                            <span className="text-rose-600 font-medium">
-                              • Reason: {item.override?.reason || 'Cancelled by department'}
-                            </span>
-                          ) : item.session?.topicCovered ? (
-                            <span className="text-slate-700 font-medium">• Topic: {item.session.topicCovered}</span>
-                          ) : null}
+                        <p className="text-xs text-slate-500 mt-0.5 flex flex-wrap items-center gap-x-2">
+                          <span>{item.courseGroup?.groupName || 'Batch A'}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{item.room || item.courseGroup?.room || 'LH-101'}</span>
+                          {item.isSubstitute && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="text-purple-700 font-medium">
+                                Substitute for {item.scheduledFaculty?.fullName}
+                              </span>
+                            </>
+                          )}
+                          {item.isExtra && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="text-amber-700 font-medium">Extra Class</span>
+                            </>
+                          )}
+                          {item.isCancelled && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="text-rose-600 font-medium">
+                                {item.override?.reason || 'Cancelled'}
+                              </span>
+                            </>
+                          )}
                         </p>
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap sm:flex-nowrap items-center justify-between sm:justify-end gap-2.5 w-full md:w-auto pt-2.5 md:pt-0 border-t md:border-t-0 border-slate-100">
+                    <div className="flex items-center justify-between sm:justify-end gap-2.5 shrink-0">
                       {item.isCancelled ? (
-                        <Badge variant="neutral" size="md">
-                          Cancelled
-                        </Badge>
+                        <span className="text-xs font-medium text-slate-500 whitespace-nowrap">Cancelled</span>
                       ) : item.isConducted ? (
-                        <div className="text-left sm:text-right">
-                          <Badge variant="success" size="md">
-                            ✓ Attendance Submitted
-                          </Badge>
-                          <p className="text-[10px] text-slate-400 mt-0.5 hidden sm:block">Conducted & Recorded</p>
-                        </div>
+                        <span className="text-xs font-semibold text-emerald-700 flex items-center gap-1 whitespace-nowrap">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Submitted</span>
+                        </span>
                       ) : (
-                        <Badge variant="danger" size="md">
-                          ● Pending Submission
-                        </Badge>
+                        <span className="text-xs font-semibold text-rose-600 whitespace-nowrap">
+                          Pending
+                        </span>
                       )}
 
-                      <div className="flex items-center gap-1.5 w-full sm:w-auto justify-end">
-                        {item.isCancelled ? (
+                      {!item.isCancelled && (
+                        <div className="flex items-center gap-1.5">
                           <button
-                            disabled
-                            className="w-full sm:w-auto px-3.5 py-2 sm:py-1.5 rounded-md text-xs font-semibold bg-slate-100 text-slate-400 cursor-not-allowed flex items-center justify-center gap-1.5"
+                            type="button"
+                            disabled={isLoadingThis}
+                            onClick={() => handleOpenAttendanceForScheduledClass(item)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+                              item.isConducted
+                                ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
+                                : 'bg-blue-600 hover:bg-blue-700 text-white'
+                            }`}
                           >
-                            <CalendarX className="w-3.5 h-3.5" /> Cancelled
-                          </button>
-                        ) : (
-                          <>
-                            <button
-                              disabled={isLoadingThis}
-                              onClick={() => handleOpenAttendanceForScheduledClass(item)}
-                              className={`w-full sm:w-auto px-3.5 py-2 sm:py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 shadow-2xs transition-all ${
-                                item.isConducted
-                                  ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
-                                  : 'bg-blue-600 hover:bg-blue-700 text-white'
-                              }`}
-                            >
-                              {isLoadingThis ? (
-                                <>
-                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                  <span>Opening...</span>
-                                </>
-                              ) : (
-                                <>
-                                  <CalendarCheck className="w-3.5 h-3.5" />
-                                  <span>{item.isConducted ? 'Edit Attendance' : 'Mark Attendance'}</span>
-                                </>
-                              )}
-                            </button>
-
-                            {!item.isConducted && (
-                              <button
-                                title="Cancel this scheduled period for today"
-                                onClick={() => setCancelModalItem(item)}
-                                className="p-2 sm:p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors shrink-0"
-                              >
-                                <CalendarX className="w-4 h-4" />
-                              </button>
+                            {isLoadingThis ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <CalendarCheck className="w-3.5 h-3.5" />
                             )}
-                          </>
-                        )}
-                      </div>
+                            <span>{item.isConducted ? 'Edit' : 'Mark'}</span>
+                          </button>
+
+                          {!item.isConducted && item.timetableEntry && (
+                            <button
+                              type="button"
+                              title="Cancel this period"
+                              onClick={() => setCancelModalItem(item)}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer transition-colors shrink-0"
+                            >
+                              <CalendarX className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -683,6 +869,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
             )}
           </div>
         </div>
+
+        {/* Assigned Subjects List */}
+        <TeacherSubjectsCard
+          onNavigateToAttendance={() => navigateTo('attendance')}
+          onMarkSubject={handleMarkSubjectFromList}
+        />
 
         {/* Take Attendance Modal */}
         <TakeAttendanceModal
@@ -705,7 +897,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
           >
             <div className="space-y-4">
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900">
-                You are cancelling this class for <strong>{todayDateStr}</strong> ({cancelModalItem.period?.label}). This cancellation will be recorded in the daily schedule overrides and visible across the college.
+                Cancelling for <strong>{teacherDateStr}</strong> ({cancelModalItem.period?.label}). Excluded from session working days automatically.
               </div>
 
               <div>
@@ -716,7 +908,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
                   rows={3}
                   value={cancelReason}
                   onChange={e => setCancelReason(e.target.value)}
-                  placeholder="e.g. Department seminar, Official meeting, or Personal emergency"
+                  placeholder="e.g. Department seminar, Official meeting, or Personal leave"
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-rose-500 focus:outline-none"
                 />
               </div>
@@ -735,7 +927,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
                     setCancelModalItem(null);
                     setCancelReason('');
                   }}
-                  className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-md"
+                  className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
                 >
                   Close
                 </button>
@@ -743,7 +935,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ setActiveTab, onNa
                   type="button"
                   disabled={isCancelling || !cancelReason.trim()}
                   onClick={handleConfirmCancelClass}
-                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-md text-xs font-bold flex items-center gap-1.5 shadow-xs"
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer"
                 >
                   {isCancelling ? 'Cancelling...' : 'Confirm Cancellation'}
                 </button>

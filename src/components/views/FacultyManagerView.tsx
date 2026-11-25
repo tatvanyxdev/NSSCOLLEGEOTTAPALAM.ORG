@@ -7,6 +7,13 @@ import { ConfirmDialog } from '../common/ConfirmDialog';
 import { Faculty, UserRole } from '../../types';
 import { UserCheck, Plus, Edit2, Trash2, Mail, Phone, Building, BookOpen, ShieldCheck, Users, CheckCircle2, AlertCircle } from 'lucide-react';
 
+function generateSecureTempPassword(length = 10): string {
+  const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$';
+  const bytes = new Uint32Array(length);
+  crypto.getRandomValues(bytes);
+  return 'Nss#' + Array.from(bytes, b => charset[b % charset.length]).join('');
+}
+
 export const FacultyManagerView: React.FC = () => {
   const {
     faculty,
@@ -21,7 +28,7 @@ export const FacultyManagerView: React.FC = () => {
     assignFacultyToCourse
   } = useCollegeData();
 
-  const { activeRole, user } = useAuth();
+  const { activeRole, adminResetUserPassword } = useAuth();
 
   // Permissions
   const canAdd = can(activeRole, 'faculty', 'create') || ['SUPER_ADMIN', 'PRINCIPAL'].includes(activeRole);
@@ -91,7 +98,7 @@ export const FacultyManagerView: React.FC = () => {
     setEmail('');
     setPhone('');
     setUsername('');
-    setPassword('Staff2026!');
+    setPassword('');
     setDepartmentId(departments[0]?.id || '');
     setDesignation('Assistant Professor');
     setQualification('M.A., NET, Ph.D');
@@ -107,7 +114,7 @@ export const FacultyManagerView: React.FC = () => {
     setEmail(f.email);
     setPhone(f.phoneNumber || '');
     setUsername(f.username || f.email?.split('@')[0] || '');
-    setPassword(f.password || 'Staff2026!');
+    setPassword('');
     setDepartmentId(f.departmentId);
     setDesignation(f.designation);
     setQualification(f.qualification || '');
@@ -128,8 +135,14 @@ export const FacultyManagerView: React.FC = () => {
     e.preventDefault();
     if (!fullName.trim() || !email.trim()) return;
     setSaveError(null);
-    setIsSaving(true);
 
+    const trimmedPass = password.trim();
+    if (trimmedPass && trimmedPass.length < 6) {
+      setSaveError('Portal password must be at least 6 characters long.');
+      return;
+    }
+
+    setIsSaving(true);
     let res: { success: boolean; error?: string };
 
     if (editingFac) {
@@ -145,14 +158,23 @@ export const FacultyManagerView: React.FC = () => {
         designation,
         qualification,
         username: username.trim() || undefined,
-        password: password.trim() || undefined,
         roles: canManageRoles ? roles : editingFac.roles
       });
+
+      if (res.success && trimmedPass) {
+        const resetRes = await adminResetUserPassword('FACULTY', editingFac.id, trimmedPass, true);
+        if (!resetRes.success) {
+          setIsSaving(false);
+          setSaveError(resetRes.error || 'Profile saved, but password reset failed.');
+          return;
+        }
+      }
     } else {
       if (!canAdd) {
         setIsSaving(false);
         return;
       }
+      const generatedTempPass = trimmedPass || generateSecureTempPassword();
       res = await addFaculty({
         fullName,
         email,
@@ -161,11 +183,18 @@ export const FacultyManagerView: React.FC = () => {
         designation,
         qualification,
         username: username.trim() || undefined,
-        password: password.trim() || undefined,
+        password: generatedTempPass,
         roles: canManageRoles ? roles : ['TEACHER'],
         isActive: true,
         profileImageUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80'
       });
+
+      if (res.success && !trimmedPass) {
+        setActionMessage({
+          type: 'success',
+          text: `Faculty added. One-time temporary password (shown once): ${generatedTempPass}`
+        });
+      }
     }
 
     setIsSaving(false);
@@ -417,7 +446,7 @@ export const FacultyManagerView: React.FC = () => {
       )}
 
       {/* Add / Edit Faculty Modal */}
-      {canAdd && (
+      {(canAdd || canEdit) && (
         <Modal
           isOpen={isAddOpen}
           onClose={() => setIsAddOpen(false)}
@@ -516,16 +545,20 @@ export const FacultyManagerView: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                  Staff Portal Password
+                  {editingFac ? 'Reset Portal Password (Optional)' : 'Staff Portal Password'}
                 </label>
                 <input
-                  type="text"
+                  type="password"
                   value={password}
                   onChange={e => setPassword(e.target.value)}
-                  placeholder="Staff2026!"
+                  placeholder={editingFac ? 'Leave blank to keep existing password' : 'Min 6 chars (auto-generated if blank)'}
                   className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm font-mono"
                 />
-                <p className="text-[10px] text-slate-400 mt-1">Min 4 chars; used to log into staff portal</p>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  {editingFac
+                    ? 'Leave blank to preserve current password; enter 6+ chars to force reset.'
+                    : 'Min 6 chars; auto-generated securely if left blank.'}
+                </p>
               </div>
             </div>
 

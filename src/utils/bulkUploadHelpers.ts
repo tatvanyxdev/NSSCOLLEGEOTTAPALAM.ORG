@@ -1,5 +1,5 @@
-import * as XLSX from 'xlsx';
-import { Department, CourseCategory, Student, Course } from '../types';
+import ExcelJS from 'exceljs';
+import { Department, CourseCategory } from '../types';
 
 export interface ParsedStudentRow {
   rowIndex: number;
@@ -11,6 +11,9 @@ export interface ParsedStudentRow {
   mobileNumber: string;
   dateOfBirth: string;
   currentSemester: number;
+  yearOfStudy: number;
+  hasExplicitSemester: boolean;
+  hasExplicitYear: boolean;
   admissionBatch: string;
   departmentCodeOrName: string;
   matchedDepartmentId?: string;
@@ -42,16 +45,238 @@ export interface ParsedCourseRow {
   errors: string[];
 }
 
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB guard against oversized uploads
+const MAX_UPLOAD_ROWS = 5000;
+
+const sanitizeSpreadsheetOutputCell = (value: unknown): string => {
+  const str = String(value ?? '');
+  const trimmedStart = str.replace(/^[\u0000-\u001F]+/, '');
+  if (/^[=+\-@\t\r]/.test(trimmedStart)) {
+    return `'${str}`;
+  }
+  return str;
+};
+
 /**
- * Standardize key strings for flexible Excel header matching
+ * Extract plain display string from any ExcelJS cell value
  */
+const extractExcelCellString = (value: ExcelJS.CellValue): string => {
+  if (value === null || value === undefined) return '';
+  if (value instanceof Date) {
+    const d = String(value.getUTCDate()).padStart(2, '0');
+    const m = String(value.getUTCMonth() + 1).padStart(2, '0');
+    const y = value.getUTCFullYear();
+    return `${d}/${m}/${y}`;
+  }
+  if (typeof value === 'object') {
+    if ('text' in value && typeof value.text === 'string') return value.text.trim();
+    if ('richText' in value && Array.isArray(value.richText)) {
+      return value.richText.map(part => part.text || '').join('').trim();
+    }
+    if ('result' in value && value.result !== undefined) {
+      return extractExcelCellString(value.result as ExcelJS.CellValue);
+    }
+    if ('hyperlink' in value && typeof value.hyperlink === 'string') {
+      return String((value as any).text || value.hyperlink).trim();
+    }
+  }
+  return String(value).trim();
+};
+
+/**
+ * Parse CSV text cleanly handling quoted commas, escaped quotes, and CRLF
+ */
+const parseCsvTextToRows = (text: string): Record<string, string>[] => {
+  const rows: string[][] = [];
+  let currentField = '';
+  let currentRow: string[] = [];
+  let inQuotes = false;
+
+  const cleanText = text.replace(/^\uFEFF/, '');
+  for (let i = 0; i < cleanText.length; i++) {
+    const ch = cleanText[i];
+    const next = cleanText[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"' && next === '"') {
+        currentField += '"';
+        i++;
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else {
+        currentField += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      currentRow.push(currentField.trim());
+      currentField = '';
+    } else if (ch === '\r' || ch === '\n') {
+      if (ch === '\r' && next === '\n') i++;
+      currentRow.push(currentField.trim());
+      if (currentRow.some(cell => cell !== '')) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      currentField = '';
+      if (rows.length > MAX_UPLOAD_ROWS + 1) break;
+    } else {
+      currentField += ch;
+    }
+  }
+  if (currentField.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentField.trim());
+    if (currentRow.some(cell => cell !== '')) {
+      rows.push(currentRow);
+    }
+  }
+
+  if (rows.length < 2) return [];
+  const headers = rows[0];
+  return rows.slice(1, MAX_UPLOAD_ROWS + 1).map(row => {
+    const obj: Record<string, string> = {};
+    headers.forEach((header, idx) => {
+      if (header) obj[header] = row[idx] ?? '';
+    });
+    return obj;
+  });
+};
+
+/**
+ * Read .xlsx (via ExcelJS) or .csv file into normalized row objects
+ */
+const readSpreadsheetRows = async (file: File): Promise<Record<string, string>[]> => {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    throw new Error('Uploaded file exceeds the 10 MB safety limit.');
+  }
+
+  const fileName = (file.name || '').toLowerCase();
+  if (fileName.endsWith('.csv') || file.type === 'text/csv') {
+    const text = await file.text();
+    return parseCsvTextToRows(text);
+  }
+
+  const buffer = await file.arrayBuffer();
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) {
+    throw new Error('The Excel workbook contains no readable worksheets.');
+  }
+
+  const headers: Record<number, string> = {};
+  const headerRow = worksheet.getRow(1);
+  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+    const label = extractExcelCellString(cell.value);
+    if (label) headers[colNumber] = label;
+  });
+
+  const rows: Record<string, string>[] = [];
+  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    if (rowNumber === 1) return;
+    if (rows.length >= MAX_UPLOAD_ROWS) return;
+
+    const record: Record<string, string> = {};
+    let hasValue = false;
+    Object.entries(headers).forEach(([colIdxStr, headerLabel]) => {
+      const colIdx = Number(colIdxStr);
+      const val = extractExcelCellString(row.getCell(colIdx).value);
+      if (val) hasValue = true;
+      record[headerLabel] = val;
+    });
+
+    if (hasValue) {
+      rows.push(record);
+    }
+  });
+
+  return rows;
+};
+
 const normalizeKey = (key: string): string => {
   return key.toLowerCase().replace(/[^a-z0-9]/g, '');
 };
 
-/**
- * Find matching department by ID, code, or name (case-insensitive, trimmed)
- */
+const pickNormalizedValue = (
+  normalized: Record<string, string>,
+  exactKeys: string[],
+  fallbackPredicate?: (normalizedKey: string) => boolean
+): string => {
+  for (const key of exactKeys) {
+    if (normalized[key]) return normalized[key];
+  }
+  if (fallbackPredicate) {
+    for (const [k, v] of Object.entries(normalized)) {
+      if (v && fallbackPredicate(k)) return v;
+    }
+  }
+  return '';
+};
+
+const ROMAN_NUMERAL_MAP: Record<string, number> = {
+  viii: 8,
+  vii: 7,
+  vi: 6,
+  iv: 4,
+  v: 5,
+  iii: 3,
+  ii: 2,
+  i: 1
+};
+
+const WORD_NUMBER_MAP: Record<string, number> = {
+  first: 1,
+  one: 1,
+  second: 2,
+  two: 2,
+  third: 3,
+  three: 3,
+  fourth: 4,
+  four: 4,
+  fifth: 5,
+  five: 5,
+  sixth: 6,
+  six: 6,
+  seventh: 7,
+  seven: 7,
+  eighth: 8,
+  eight: 8
+};
+
+export const parseAcademicNumber = (raw: string, max: number): number | null => {
+  const cleaned = String(raw || '').trim();
+  if (!cleaned) return null;
+
+  const explicitMatch =
+    cleaned.match(/\b(\d+)\b/) ||
+    cleaned.match(/^[sSyY](\d+)$/) ||
+    cleaned.match(/(\d+)/);
+  if (explicitMatch) {
+    const parsed = parseInt(explicitMatch[1], 10);
+    if (!Number.isNaN(parsed) && parsed >= 1 && parsed <= max) {
+      return parsed;
+    }
+  }
+
+  const romanMatch = cleaned.toLowerCase().match(/\b(viii|vii|vi|iv|v|iii|ii|i)\b/);
+  if (romanMatch) {
+    const val = ROMAN_NUMERAL_MAP[romanMatch[1]];
+    if (val && val >= 1 && val <= max) {
+      return val;
+    }
+  }
+
+  const lower = cleaned.toLowerCase();
+  for (const [word, val] of Object.entries(WORD_NUMBER_MAP)) {
+    if (new RegExp(`\\b${word}\\b`).test(lower) && val <= max) {
+      return val;
+    }
+  }
+
+  return null;
+};
+
 export const findDepartment = (
   query: string,
   departments: Department[]
@@ -68,9 +293,6 @@ export const findDepartment = (
   );
 };
 
-/**
- * Find matching course category by ID, code, or name
- */
 export const findCategory = (
   query: string,
   categories: CourseCategory[]
@@ -88,124 +310,150 @@ export const findCategory = (
 };
 
 /**
- * Parse uploaded Student Excel/CSV file
+ * Parse uploaded Student Excel (.xlsx) or CSV file
  */
 export const parseStudentExcelFile = async (
   file: File,
   departments: Department[],
-  defaultDepartmentId?: string
+  defaultDepartmentId?: string,
+  defaultYearOfStudy?: number
 ): Promise<{ rows: ParsedStudentRow[]; totalRows: number; validCount: number; errorCount: number }> => {
-  const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: 'array' });
-  const sheetName = workbook.SheetNames[0];
-  const worksheet = workbook.Sheets[sheetName];
-  const rawRows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet, { defval: '' });
+  const rawRows = await readSpreadsheetRows(file);
 
   const rows: ParsedStudentRow[] = rawRows.map((raw, idx) => {
-    const rowNum = idx + 2; // account for header row
+    const rowNum = idx + 2;
     const normalized: Record<string, string> = {};
     for (const [k, v] of Object.entries(raw)) {
       normalized[normalizeKey(k)] = String(v ?? '').trim();
     }
 
-    // Extract values with various possible column header aliases
-    const fullName =
-      normalized['fullname'] ||
-      normalized['studentname'] ||
-      normalized['name'] ||
-      normalized['candidatename'] ||
-      '';
+    const fullName = pickNormalizedValue(
+      normalized,
+      ['fullname', 'studentname', 'name', 'candidatename', 'nameofstudent', 'nameofthestudent']
+    );
 
-    const universityRegisterNumber =
-      normalized['universityregisternumber'] ||
-      normalized['universityregno'] ||
-      normalized['registernumber'] ||
-      normalized['regno'] ||
-      normalized['uokregno'] ||
-      normalized['kturegno'] ||
-      '';
+    const universityRegisterNumber = pickNormalizedValue(
+      normalized,
+      [
+        'universityregisternumber',
+        'universityregno',
+        'registernumber',
+        'registerno',
+        'regno',
+        'uokregno',
+        'kturegno'
+      ]
+    );
 
-    const rollNumber =
-      normalized['rollnumber'] ||
-      normalized['rollno'] ||
-      normalized['classrollno'] ||
-      '';
+    const rollNumber = pickNormalizedValue(
+      normalized,
+      ['rollnumber', 'rollno', 'classrollno', 'classrollnumber']
+    );
 
-    const admissionNumber =
-      normalized['admissionnumber'] ||
-      normalized['admissionno'] ||
-      normalized['admno'] ||
-      '';
+    const admissionNumber = pickNormalizedValue(
+      normalized,
+      ['admissionnumber', 'admissionno', 'admno']
+    );
 
-    const email =
-      normalized['email'] ||
-      normalized['emailaddress'] ||
-      normalized['studentemail'] ||
-      '';
+    const email = pickNormalizedValue(
+      normalized,
+      ['email', 'emailaddress', 'studentemail', 'mailid']
+    );
 
-    const mobileNumber =
-      normalized['mobilenumber'] ||
-      normalized['mobile'] ||
-      normalized['phone'] ||
-      normalized['phonenumber'] ||
-      normalized['contactnumber'] ||
-      '';
+    const mobileNumber = pickNormalizedValue(
+      normalized,
+      ['mobilenumber', 'mobile', 'phone', 'phonenumber', 'contactnumber', 'mobileno', 'phoneno']
+    );
 
-    const dateOfBirth =
-      normalized['dateofbirth'] ||
-      normalized['dob'] ||
-      normalized['birthdate'] ||
-      '';
+    const dateOfBirth = pickNormalizedValue(
+      normalized,
+      ['dateofbirth', 'dateofbirthddmmyyyy', 'dateofbirthyyyymmdd', 'dob', 'birthdate'],
+      key => key.startsWith('dateofbirth') || key === 'dob'
+    );
 
-    const semesterRaw =
-      normalized['currentsemester'] ||
-      normalized['semester'] ||
-      normalized['sem'] ||
-      '1';
-    const currentSemester = Math.max(1, Math.min(8, parseInt(semesterRaw, 10) || 1));
+    const semesterRaw = pickNormalizedValue(
+      normalized,
+      [
+        'currentsemester',
+        'currentsemester18',
+        'semester18',
+        'semester',
+        'semesterno',
+        'semesternumber',
+        'currentsem',
+        'semno',
+        'sem18',
+        'sem',
+        'presentsemester',
+        'presentsem',
+        'academicsemester'
+      ],
+      key => key === 'sem' || key.includes('semester') || /^sem\d*$/.test(key)
+    );
 
-    const admissionBatch =
-      normalized['admissionbatch'] ||
-      normalized['batch'] ||
-      normalized['academicbatch'] ||
-      '2026-2030';
+    const yearRaw = pickNormalizedValue(
+      normalized,
+      [
+        'yearofstudy',
+        'studyyear',
+        'classyear',
+        'currentyear',
+        'academicyearofstudy',
+        'year',
+        'yr'
+      ],
+      key => key.includes('yearofstudy') || key.includes('classyear') || key.includes('studyyear')
+    );
 
-    const deptQuery =
-      normalized['department'] ||
-      normalized['departmentcode'] ||
-      normalized['dept'] ||
-      normalized['deptcode'] ||
-      normalized['branch'] ||
-      '';
+    const parsedSem = parseAcademicNumber(semesterRaw, 8);
+    const parsedYear = parseAcademicNumber(yearRaw, 4);
+    const hasExplicitSemester = parsedSem !== null;
+    const hasExplicitYear = parsedYear !== null;
 
-    const gender =
-      normalized['gender'] ||
-      normalized['sex'] ||
-      '';
+    let currentSemester = parsedSem ?? (parsedYear ? (parsedYear - 1) * 2 + 1 : 1);
+    let yearOfStudy = parsedYear ?? Math.ceil(currentSemester / 2);
 
-    const bloodGroup =
-      normalized['bloodgroup'] ||
-      normalized['blood'] ||
-      '';
+    if (defaultYearOfStudy && defaultYearOfStudy >= 1 && defaultYearOfStudy <= 4) {
+      yearOfStudy = defaultYearOfStudy;
+      if (!hasExplicitSemester || Math.ceil(currentSemester / 2) !== defaultYearOfStudy) {
+        currentSemester = (defaultYearOfStudy - 1) * 2 + 1;
+      }
+    }
 
-    const guardianName =
-      normalized['guardianname'] ||
-      normalized['parentname'] ||
-      normalized['fathername'] ||
-      '';
+    const admissionBatch = pickNormalizedValue(
+      normalized,
+      ['admissionbatch', 'batch', 'academicbatch', 'academicsession']
+    ) || '2026-2030';
 
-    const guardianPhone =
-      normalized['guardianphone'] ||
-      normalized['parentphone'] ||
-      normalized['emergencynumber'] ||
-      '';
+    const deptQuery = pickNormalizedValue(
+      normalized,
+      [
+        'department',
+        'departmentnameorcode',
+        'departmentcodeorname',
+        'departmentname',
+        'departmentcode',
+        'dept',
+        'deptname',
+        'deptcode',
+        'branch',
+        'programme',
+        'program'
+      ]
+    );
 
-    const address =
-      normalized['address'] ||
-      normalized['residentialaddress'] ||
-      '';
+    const gender = pickNormalizedValue(normalized, ['gender', 'sex']);
+    const bloodGroup = pickNormalizedValue(normalized, ['bloodgroup', 'blood']);
+    const guardianName = pickNormalizedValue(
+      normalized,
+      ['guardianname', 'parentname', 'fathername', 'mothername']
+    );
+    const guardianPhone = pickNormalizedValue(
+      normalized,
+      ['guardianphone', 'parentphone', 'emergencynumber', 'guardianmobile', 'parentmobile']
+    );
+    const address = pickNormalizedValue(normalized, ['address', 'residentialaddress']);
 
-    // Resolve Department
     let matchedDept = defaultDepartmentId
       ? departments.find(d => d.id === defaultDepartmentId)
       : undefined;
@@ -231,6 +479,9 @@ export const parseStudentExcelFile = async (
       mobileNumber: mobileNumber.replace(/\D/g, ''),
       dateOfBirth,
       currentSemester,
+      yearOfStudy,
+      hasExplicitSemester,
+      hasExplicitYear,
       admissionBatch,
       departmentCodeOrName: deptQuery,
       matchedDepartmentId: matchedDept?.id,
@@ -252,7 +503,7 @@ export const parseStudentExcelFile = async (
 };
 
 /**
- * Parse uploaded Course Excel/CSV file (SuperAdmin only)
+ * Parse uploaded Course Excel (.xlsx) or CSV file
  */
 export const parseCourseExcelFile = async (
   file: File,
@@ -260,11 +511,7 @@ export const parseCourseExcelFile = async (
   categories: CourseCategory[],
   defaultDepartmentId?: string
 ): Promise<{ rows: ParsedCourseRow[]; totalRows: number; validCount: number; errorCount: number }> => {
-  const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: 'array' });
-  const sheetName = workbook.SheetNames[0];
-  const worksheet = workbook.Sheets[sheetName];
-  const rawRows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet, { defval: '' });
+  const rawRows = await readSpreadsheetRows(file);
 
   const rows: ParsedCourseRow[] = rawRows.map((raw, idx) => {
     const rowNum = idx + 2;
@@ -306,7 +553,6 @@ export const parseCourseExcelFile = async (
     const theoryHours = Math.max(0, parseInt(normalized['theoryhours'] || normalized['theory'] || normalized['lecturehours'] || '3', 10) || 0);
     const practicalHours = Math.max(0, parseInt(normalized['practicalhours'] || normalized['practical'] || normalized['labhours'] || '0', 10) || 0);
 
-    // Resolve Department
     let matchedDept = defaultDepartmentId
       ? departments.find(d => d.id === defaultDepartmentId)
       : undefined;
@@ -316,7 +562,6 @@ export const parseCourseExcelFile = async (
       if (found) matchedDept = found;
     }
 
-    // Resolve Category
     let matchedCat = categories[0];
     if (catQuery) {
       const found = findCategory(catQuery, categories);
@@ -353,17 +598,34 @@ export const parseCourseExcelFile = async (
   return { rows, totalRows: rows.length, validCount, errorCount };
 };
 
+const downloadExcelWorkbook = async (wb: ExcelJS.Workbook, filename: string) => {
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
 /**
  * Download Student Enrollment Excel Template (.xlsx)
  */
-export const downloadStudentExcelTemplate = (
+export const downloadStudentExcelTemplate = async (
   departments: Department[],
   prefilledDeptName?: string
-) => {
-  const sampleDept = prefilledDeptName || departments[0]?.name || 'Computer Science';
-  const sampleDeptCode = departments[0]?.code || 'CS';
+): Promise<void> => {
+  const sampleDeptCode = prefilledDeptName
+    ? (findDepartment(prefilledDeptName, departments)?.code || departments[0]?.code || 'CS')
+    : (departments[0]?.code || 'CS');
 
-  // Sheet 1: Students Data Template
+  const wb = new ExcelJS.Workbook();
+
   const headers = [
     'Full Name',
     'University Register Number',
@@ -381,97 +643,32 @@ export const downloadStudentExcelTemplate = (
     'Guardian Phone'
   ];
 
-  const sampleRows = [
-    [
-      'Aarav Menon',
-      'UOK26CS001',
-      'CS-01',
-      'ADM202601',
-      'aarav.menon@college.edu',
-      '9876543210',
-      '15/05/2005',
-      1,
-      '2026-2030',
-      sampleDeptCode,
-      'Male',
-      'O+',
-      'Rajesh Menon',
-      '9876500001'
-    ],
-    [
-      'Ananya Nair',
-      'UOK26CS002',
-      'CS-02',
-      'ADM202602',
-      'ananya.nair@college.edu',
-      '9876543211',
-      '22/08/2005',
-      1,
-      '2026-2030',
-      sampleDeptCode,
-      'Female',
-      'A+',
-      'Gopal Nair',
-      '9876500002'
-    ],
-    [
-      'Mohammed Fasil',
-      'UOK26CS003',
-      'CS-03',
-      'ADM202603',
-      'm.fasil@college.edu',
-      '9876543212',
-      '10/01/2005',
-      1,
-      '2026-2030',
-      sampleDeptCode,
-      'Male',
-      'B+',
-      'Kassim Fasil',
-      '9876500003'
-    ]
+  const sampleRows: (string | number)[][] = [
+    ['Aarav Menon', 'UOK26CS001', 'CS-01', 'ADM202601', 'aarav.menon@college.edu', '9876543210', '15/05/2005', 1, '2026-2030', sampleDeptCode, 'Male', 'O+', 'Rajesh Menon', '9876500001'],
+    ['Ananya Nair', 'UOK26CS002', 'CS-02', 'ADM202602', 'ananya.nair@college.edu', '9876543211', '22/08/2005', 1, '2026-2030', sampleDeptCode, 'Female', 'A+', 'Gopal Nair', '9876500002'],
+    ['Mohammed Fasil', 'UOK26CS003', 'CS-03', 'ADM202603', 'm.fasil@college.edu', '9876543212', '10/01/2005', 1, '2026-2030', sampleDeptCode, 'Male', 'B+', 'Kassim Fasil', '9876500003']
   ];
 
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...sampleRows]);
+  const ws = wb.addWorksheet('Student_Enrollment_Template');
+  ws.addRow(headers).font = { bold: true };
+  sampleRows.forEach(r => ws.addRow(r.map(v => (typeof v === 'number' ? v : sanitizeSpreadsheetOutputCell(v)))));
+  ws.columns = [22, 26, 14, 16, 28, 16, 24, 20, 16, 24, 12, 12, 20, 16].map(width => ({ width }));
 
-  // Set column widths
-  ws['!cols'] = [
-    { wch: 22 }, // Full Name
-    { wch: 26 }, // University Reg
-    { wch: 14 }, // Roll No
-    { wch: 16 }, // Adm No
-    { wch: 28 }, // Email
-    { wch: 16 }, // Mobile
-    { wch: 24 }, // DOB
-    { wch: 20 }, // Semester
-    { wch: 16 }, // Batch
-    { wch: 24 }, // Dept
-    { wch: 12 }, // Gender
-    { wch: 12 }, // Blood
-    { wch: 20 }, // Guardian
-    { wch: 16 }  // Guardian Phone
-  ];
+  const wsDept = wb.addWorksheet('Valid_Departments_List');
+  wsDept.addRow(['Department Code', 'Department Full Name', 'Department ID']).font = { bold: true };
+  departments.forEach(d => wsDept.addRow([sanitizeSpreadsheetOutputCell(d.code), sanitizeSpreadsheetOutputCell(d.name), sanitizeSpreadsheetOutputCell(d.id)]));
+  wsDept.columns = [18, 35, 30].map(width => ({ width }));
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Student_Enrollment_Template');
-
-  // Sheet 2: Department Reference List
-  const deptRefHeaders = ['Department Code', 'Department Full Name', 'Department ID'];
-  const deptRefRows = departments.map(d => [d.code, d.name, d.id]);
-  const wsDept = XLSX.utils.aoa_to_sheet([deptRefHeaders, ...deptRefRows]);
-  wsDept['!cols'] = [{ wch: 18 }, { wch: 35 }, { wch: 30 }];
-  XLSX.utils.book_append_sheet(wb, wsDept, 'Valid_Departments_List');
-
-  // Sheet 3: Field Guidelines
+  const wsInst = wb.addWorksheet('Instructions_Read_First');
+  wsInst.addRow(['Field Name', 'Required?', 'Description & Allowed Values']).font = { bold: true };
   const instructions = [
-    ['Field Name', 'Required?', 'Description & Allowed Values'],
     ['Full Name', 'YES', 'Full official name of student as per 10th/12th certificate'],
     ['University Register Number', 'RECOMMENDED', 'Official University Register Number (e.g. UOK26CS001). If left blank, one will be generated.'],
     ['Roll Number', 'OPTIONAL', 'Class roll number (e.g. CS-01)'],
     ['Admission Number', 'OPTIONAL', 'College admission register number (e.g. ADM202601)'],
     ['Email Address', 'YES', 'Valid email for student portal access and communications'],
     ['Mobile Number', 'YES', '10-digit primary student contact number'],
-    ['Date of Birth', 'RECOMMENDED', 'Format: DD/MM/YYYY or YYYY-MM-DD. Used for student default password formula!'],
+    ['Date of Birth', 'RECOMMENDED', 'Format: DD/MM/YYYY or YYYY-MM-DD. Used for initial onboarding verification.'],
     ['Current Semester', 'YES', 'Integer from 1 to 8 (e.g. 1 for newly admitted FYUGP students)'],
     ['Admission Batch', 'YES', 'Academic batch year string, e.g. 2026-2030'],
     ['Department Name or Code', 'YES', 'Department code (e.g. CS, ENG, COMMERCE) or Full Name from the Valid_Departments_List tab.'],
@@ -480,20 +677,22 @@ export const downloadStudentExcelTemplate = (
     ['Guardian Name', 'OPTIONAL', 'Parent or guardian full name'],
     ['Guardian Phone', 'OPTIONAL', 'Parent or guardian emergency contact phone number']
   ];
-  const wsInst = XLSX.utils.aoa_to_sheet(instructions);
-  wsInst['!cols'] = [{ wch: 28 }, { wch: 15 }, { wch: 70 }];
-  XLSX.utils.book_append_sheet(wb, wsInst, 'Instructions_Read_First');
+  instructions.forEach(r => wsInst.addRow(r));
+  wsInst.columns = [28, 15, 70].map(width => ({ width }));
 
-  XLSX.writeFile(wb, 'NSS_Student_Enrollment_Bulk_Template.xlsx');
+  await downloadExcelWorkbook(wb, 'NSS_Student_Enrollment_Bulk_Template.xlsx');
 };
 
 /**
- * Download Course / Subject Excel Template (.xlsx) (SuperAdmin)
+ * Download Course / Subject Excel Template (.xlsx)
  */
-export const downloadCourseExcelTemplate = (
+export const downloadCourseExcelTemplate = async (
   departments: Department[],
   categories: CourseCategory[]
-) => {
+): Promise<void> => {
+  const sampleDeptCode = departments[0]?.code || 'CS';
+  const wb = new ExcelJS.Workbook();
+
   const headers = [
     'Course Code',
     'Course Title',
@@ -505,90 +704,34 @@ export const downloadCourseExcelTemplate = (
     'Practical Hours / Week'
   ];
 
-  const sampleDeptCode = departments[0]?.code || 'CS';
-  const sampleCatCode = categories[0]?.code || 'DSC';
-
-  const sampleRows = [
-    [
-      'CS101',
-      'Foundations of Programming in Python',
-      sampleDeptCode,
-      'Discipline Specific Core (Major)',
-      1,
-      4,
-      3,
-      2
-    ],
-    [
-      'CS102',
-      'Computer Systems Architecture',
-      sampleDeptCode,
-      'Discipline Specific Core (Major)',
-      1,
-      4,
-      3,
-      0
-    ],
-    [
-      'MAT103',
-      'Discrete Mathematical Foundations',
-      'MATH',
-      'Discipline Specific Minor',
-      1,
-      3,
-      3,
-      0
-    ],
-    [
-      'ENG104',
-      'Professional Communication & Academic Writing',
-      'ENG',
-      'Ability Enhancement Course (AEC)',
-      1,
-      3,
-      3,
-      0
-    ],
-    [
-      'CS105',
-      'Web Development Fundamentals Lab',
-      sampleDeptCode,
-      'Skill Enhancement Course (SEC)',
-      1,
-      2,
-      0,
-      4
-    ]
+  const sampleRows: (string | number)[][] = [
+    ['CS101', 'Foundations of Programming in Python', sampleDeptCode, 'Discipline Specific Core (Major)', 1, 4, 3, 2],
+    ['CS102', 'Computer Systems Architecture', sampleDeptCode, 'Discipline Specific Core (Major)', 1, 4, 3, 0],
+    ['MAT103', 'Discrete Mathematical Foundations', 'MATH', 'Discipline Specific Minor', 1, 3, 3, 0],
+    ['ENG104', 'Professional Communication & Academic Writing', 'ENG', 'Ability Enhancement Course (AEC)', 1, 3, 3, 0],
+    ['CS105', 'Web Development Fundamentals Lab', sampleDeptCode, 'Skill Enhancement Course (SEC)', 1, 2, 0, 4]
   ];
 
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...sampleRows]);
-  ws['!cols'] = [
-    { wch: 16 }, // Course Code
-    { wch: 40 }, // Course Title
-    { wch: 25 }, // Dept Code/Name
-    { wch: 32 }, // Course Category
-    { wch: 16 }, // Semester
-    { wch: 12 }, // Credits
-    { wch: 20 }, // Theory Hours
-    { wch: 22 }  // Practical Hours
-  ];
+  const ws = wb.addWorksheet('Course_Add_Template');
+  ws.addRow(headers).font = { bold: true };
+  sampleRows.forEach(r => ws.addRow(r.map(v => (typeof v === 'number' ? v : sanitizeSpreadsheetOutputCell(v)))));
+  ws.columns = [16, 40, 25, 32, 16, 12, 20, 22].map(width => ({ width }));
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Course_Add_Template');
+  const wsDept = wb.addWorksheet('Valid_Departments');
+  wsDept.addRow(['Department Code', 'Department Full Name']).font = { bold: true };
+  departments.forEach(d => wsDept.addRow([sanitizeSpreadsheetOutputCell(d.code), sanitizeSpreadsheetOutputCell(d.name)]));
+  wsDept.columns = [18, 35].map(width => ({ width }));
 
-  // Sheet 2: Department List
-  const deptHeaders = ['Department Code', 'Department Full Name'];
-  const deptRows = departments.map(d => [d.code, d.name]);
-  const wsDept = XLSX.utils.aoa_to_sheet([deptHeaders, ...deptRows]);
-  wsDept['!cols'] = [{ wch: 18 }, { wch: 35 }];
-  XLSX.utils.book_append_sheet(wb, wsDept, 'Valid_Departments');
+  const wsCat = wb.addWorksheet('Valid_Course_Categories');
+  wsCat.addRow(['Category Code', 'Category Full Name', 'Description']).font = { bold: true };
+  categories.forEach(c =>
+    wsCat.addRow([
+      sanitizeSpreadsheetOutputCell(c.code),
+      sanitizeSpreadsheetOutputCell(c.name),
+      sanitizeSpreadsheetOutputCell(c.description || '')
+    ])
+  );
+  wsCat.columns = [16, 35, 50].map(width => ({ width }));
 
-  // Sheet 3: Category List
-  const catHeaders = ['Category Code', 'Category Full Name', 'Description'];
-  const catRows = categories.map(c => [c.code, c.name, c.description || '']);
-  const wsCat = XLSX.utils.aoa_to_sheet([catHeaders, ...catRows]);
-  wsCat['!cols'] = [{ wch: 16 }, { wch: 35 }, { wch: 50 }];
-  XLSX.utils.book_append_sheet(wb, wsCat, 'Valid_Course_Categories');
-
-  XLSX.writeFile(wb, 'NSS_Course_Addition_Bulk_Template.xlsx');
+  await downloadExcelWorkbook(wb, 'NSS_Course_Addition_Bulk_Template.xlsx');
 };

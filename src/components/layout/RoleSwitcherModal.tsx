@@ -19,13 +19,14 @@ interface RoleSwitcherModalProps {
 }
 
 export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, onClose }) => {
-  const { user, activeRole, loginAsDemoUser, switchRole } = useAuth();
+  const { user, activeRole, switchRole } = useAuth();
+  const [switchError, setSwitchError] = React.useState<string | null>(null);
 
   // Strict RBAC Verification:
   // Students are NEVER allowed to access the role switcher.
   // Only SUPER_ADMIN (or users who possess SUPER_ADMIN role) can open and switch roles via this modal.
-  const isSuperAdmin = user?.roles?.includes('SUPER_ADMIN') || activeRole === 'SUPER_ADMIN';
-  const isStudent = activeRole === 'STUDENT' || user?.roles?.includes('STUDENT');
+  const isSuperAdmin = Boolean(user?.roles?.includes('SUPER_ADMIN'));
+  const isStudent = activeRole === 'STUDENT' || Boolean(user?.roles?.includes('STUDENT'));
 
   if (!isOpen) return null;
 
@@ -143,8 +144,13 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
     }
   ];
 
-  const handleSelectRole = (role: UserRole) => {
-    loginAsDemoUser(role);
+  const handleSelectRole = async (role: UserRole) => {
+    setSwitchError(null);
+    const res = await switchRole(role);
+    if (!res.success) {
+      setSwitchError(res.error || 'Role switch rejected by server authorization.');
+      return;
+    }
     onClose();
   };
 
@@ -153,9 +159,14 @@ export const RoleSwitcherModal: React.FC<RoleSwitcherModalProps> = ({ isOpen, on
       isOpen={isOpen}
       onClose={onClose}
       title="Switch Portal Role"
-      subtitle="Select any user role to experience the personalized dashboard and permissions"
+      subtitle="Preview role-scoped dashboards using your verified Super Admin session"
       maxWidth="max-w-3xl"
     >
+      {switchError && (
+        <div className="mb-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium">
+          {switchError}
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[70vh] overflow-y-auto p-1">
         {demoRoles.map(item => {
           const Icon = item.icon;

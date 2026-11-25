@@ -38,6 +38,26 @@ import {
 import { HodFacultyManagementCard } from '../faculty/HodFacultyManagementCard';
 import { HodSubjectApprovalsCard } from '../faculty/HodSubjectApprovalsCard';
 
+function randomDigits(length: number): string {
+  const bytes = new Uint32Array(length);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => String(b % 10)).join('');
+}
+
+function generateSecureTempPassword(length = 10): string {
+  const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$';
+  const bytes = new Uint32Array(length);
+  crypto.getRandomValues(bytes);
+  return 'Nss#' + Array.from(bytes, b => charset[b % charset.length]).join('');
+}
+
+function sanitizeCsvCell(value: unknown): string {
+  const str = String(value ?? '');
+  const trimmedStart = str.replace(/^[\u0000-\u001F]+/, '');
+  const neutralized = /^[=+\-@\t\r]/.test(trimmedStart) ? `'${str}` : str;
+  return `"${neutralized.replace(/"/g, '""')}"`;
+}
+
 interface StaffEnrollmentViewProps {
   onNavigateToStudents?: () => void;
   onNavigateToCourseAllocation?: () => void;
@@ -60,7 +80,7 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
     assignFacultyToCourse
   } = useCollegeData();
 
-  const { activeRole, user } = useAuth();
+  const { activeRole, user, adminResetUserPassword } = useAuth();
   const isHOD = activeRole === 'HOD';
 
   const currentFaculty =
@@ -220,9 +240,10 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
 
   const handleAutoFillSuggestedCredentials = () => {
     const cleanPrefix = (employeeCode.trim() || email.split('@')[0] || fullName.trim().split(' ')[0] || 'staff').toLowerCase().replace(/[^a-z0-9]/g, '');
-    const randNum = Math.floor(100 + Math.random() * 900);
+    const randNum = randomDigits(3);
     setUsername(`${cleanPrefix || 'staff'}${randNum}`);
-    setPassword(`Staff${randNum}!`);
+    setPassword(generateSecureTempPassword());
+    setShowPassword(true);
   };
 
   const handleOpenEdit = (f: Faculty) => {
@@ -239,7 +260,7 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
     setQualification(f.qualification || '');
     setRoles(f.roles);
     setUsername(f.username || f.email.split('@')[0]);
-    setPassword(f.password || 'Staff2026!');
+    setPassword('');
     setStatus(f.status || 'ACTIVE');
     setIsAddOpen(true);
   };
@@ -279,7 +300,8 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
   const usernameCheck = checkStaffUsernameRules(username);
   const passwordCheck = checkStaffPasswordRules(password);
   const areCredentialsValid =
-    (!username.trim() || usernameCheck.isValid) && (!password.trim() || passwordCheck.isValid);
+    (!username.trim() || usernameCheck.isValid) &&
+    (!password.trim() || (passwordCheck.isValid && password.trim().length >= 6));
 
   const handleSaveStaff = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -294,24 +316,21 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
     let finalUsername = username.trim().toLowerCase();
     if (!finalUsername) {
       const cleanPrefix = (employeeCode.trim() || email.split('@')[0] || fullName.trim().split(' ')[0] || 'staff').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const randNum = Math.floor(100 + Math.random() * 900);
+      const randNum = randomDigits(3);
       finalUsername = `${cleanPrefix || 'staff'}${randNum}`;
     }
 
-    let finalPassword = password.trim();
-    if (!finalPassword) {
-      const randNum = Math.floor(100 + Math.random() * 900);
-      finalPassword = `Staff${randNum}!`;
-    }
+    const enteredPassword = password.trim();
+    const generatedTempPass = !editingFac && !enteredPassword ? generateSecureTempPassword() : '';
+    const effectiveNewPassword = enteredPassword || generatedTempPass;
 
     const usernameCheckResult = checkStaffUsernameRules(finalUsername);
-    const passwordCheckResult = checkStaffPasswordRules(finalPassword);
     if (!usernameCheckResult.isValid) {
       setStaffModalError('Staff Portal Username must be at least 3 characters and contain only letters, numbers, dot, underscore, or hyphen.');
       return;
     }
-    if (!passwordCheckResult.isValid) {
-      setStaffModalError('Staff Portal Password must be at least 4 characters long.');
+    if (effectiveNewPassword && effectiveNewPassword.length < 6) {
+      setStaffModalError('Staff Portal Password must be at least 6 characters long.');
       return;
     }
 
@@ -367,10 +386,18 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
         designation,
         qualification: qualification.trim(),
         username: finalUsername,
-        password: finalPassword,
         status,
         roles: canManageRoles ? roles : editingFac.roles
       });
+
+      if (res.success && enteredPassword) {
+        const resetRes = await adminResetUserPassword('FACULTY', editingFac.id, enteredPassword, true);
+        if (!resetRes.success) {
+          setIsSavingStaff(false);
+          setStaffModalError(resetRes.error || 'Profile saved, but password reset failed.');
+          return;
+        }
+      }
     } else {
       if (!canAdd) {
         setIsSavingStaff(false);
@@ -388,12 +415,18 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
         designation,
         qualification: qualification.trim(),
         username: finalUsername,
-        password: finalPassword,
+        password: effectiveNewPassword,
         status,
         roles: canManageRoles ? roles : ['TEACHER'],
         isActive: status === 'ACTIVE',
         profileImageUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80'
       });
+
+      if (res.success && generatedTempPass) {
+        setSuccessMessage(
+          `Enrolled ${fullName.trim()} (${finalUsername}). One-time temporary password (shown once): ${generatedTempPass}`
+        );
+      }
     }
 
     setIsSavingStaff(false);
@@ -442,8 +475,9 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
 
   const handleCopyCredentials = (f: Faculty) => {
     const u = f.username || f.email.split('@')[0];
-    const p = f.password || 'Staff2026!';
-    navigator.clipboard.writeText(`Portal Login for ${f.fullName}\nUsername: ${u}\nPassword: ${p}\nDesignation: ${f.designation}`);
+    navigator.clipboard.writeText(
+      `Portal Account for ${f.fullName}\nUsername: ${u}\nEmail: ${f.email}\nDesignation: ${f.designation}\nPassword: Protected (use Edit / Credentials Directory to reset)\nPortal URL: ${window.location.origin}`
+    );
     setCopiedId(f.id);
     setTimeout(() => setCopiedId(null), 2500);
   };
@@ -479,7 +513,7 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
   const officeCount = baseFacultySet.filter(f => f.roles.includes('OFFICE_STAFF')).length;
   const principalCount = baseFacultySet.filter(f => f.roles.includes('PRINCIPAL')).length;
 
-  // CSV Export
+  // CSV Export (formula-injection protected)
   const handleExportCSV = () => {
     const headers = [
       'Full Name',
@@ -495,26 +529,28 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
     const rows = filteredFaculty.map(f => {
       const dept = departments.find(d => d.id === f.departmentId)?.name || 'General / Office';
       return [
-        `"${f.fullName}"`,
-        `"${f.employeeCode || f.employeeId || ''}"`,
-        `"${f.designation}"`,
-        `"${dept}"`,
-        `"${f.roles.join(', ')}"`,
-        `"${f.email}"`,
-        `"${f.mobileNumber || f.phoneNumber || f.phone || ''}"`,
-        `"${f.username || ''}"`,
-        `"${f.status || 'ACTIVE'}"`
-      ];
+        f.fullName,
+        f.employeeCode || f.employeeId || '',
+        f.designation,
+        dept,
+        f.roles.join(', '),
+        f.email,
+        f.mobileNumber || f.phoneNumber || f.phone || '',
+        f.username || '',
+        f.status || 'ACTIVE'
+      ].map(sanitizeCsvCell);
     });
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const csvBody = [headers.map(sanitizeCsvCell).join(','), ...rows.map(e => e.join(','))].join('\n');
+    const blob = new Blob([csvBody], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
+    link.setAttribute('href', url);
     link.setAttribute('download', `${isHOD ? (hodDepartment?.code || 'Dept') + '_Staff_Register' : 'NSS_Staff_Register'}_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   if (activeRole !== 'SUPER_ADMIN' && activeRole !== 'PRINCIPAL' && activeRole !== 'HOD') {
@@ -1324,14 +1360,14 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
                 {/* Password */}
                 <div>
                   <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                    Staff Portal Password
+                    {editingFac ? 'Reset Portal Password (Optional)' : 'Staff Portal Password'}
                   </label>
                   <div className="relative">
                     <input
                       type={showPassword ? 'text' : 'password'}
                       value={password}
                       onChange={e => setPassword(e.target.value)}
-                      placeholder="Auto-generated if left blank"
+                      placeholder={editingFac ? 'Leave blank to keep existing password' : 'Auto-generated if left blank (6+ chars)'}
                       className="w-full px-3 py-2 pr-8 rounded-lg border border-slate-300 text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white"
                     />
                     <button
@@ -1344,14 +1380,16 @@ export const StaffEnrollmentView: React.FC<StaffEnrollmentViewProps> = ({
                   </div>
                   <div className="flex items-center gap-1 mt-1">
                     {!password.trim() ? (
-                      <span className="text-[10px] text-slate-400">Auto-generated upon save if blank</span>
-                    ) : passwordCheck.isValid ? (
+                      <span className="text-[10px] text-slate-400">
+                        {editingFac ? 'Existing password kept unchanged' : 'Secure temp password auto-generated if blank'}
+                      </span>
+                    ) : passwordCheck.isValid && password.trim().length >= 6 ? (
                       <span className="text-[10px] text-emerald-600 flex items-center gap-1">
-                        <CheckCircle2 className="w-2.5 h-2.5" /> Valid password
+                        <CheckCircle2 className="w-2.5 h-2.5" /> Valid password (6+ chars)
                       </span>
                     ) : (
                       <span className="text-[10px] text-amber-600 flex items-center gap-1">
-                        <AlertCircle className="w-2.5 h-2.5" /> Min 4 chars & 1 number
+                        <AlertCircle className="w-2.5 h-2.5" /> Min 6 chars required
                       </span>
                     )}
                   </div>

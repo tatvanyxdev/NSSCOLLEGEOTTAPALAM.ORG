@@ -4,7 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { can } from '../../config/permissions';
 import { Modal, Badge } from '../common/UIComponents';
 import { Course, CourseGroup } from '../../types';
-import { BookOpen, Plus, Edit2, Layers, Search, Filter, Users, Building, FileSpreadsheet, Sparkles } from 'lucide-react';
+import { BookOpen, Plus, Edit2, Trash2, Layers, Search, Filter, Users, Building, FileSpreadsheet, Sparkles } from 'lucide-react';
 import { BulkCourseUploadModal } from '../modals/BulkCourseUploadModal';
 import { ProvisionalCourseMappingModal } from '../faculty/ProvisionalCourseMappingModal';
 
@@ -16,8 +16,10 @@ export const CoursesMasterView: React.FC = () => {
     faculty,
     courseOfferings,
     courseGroups,
+    studentCourseRegistrations,
     addCourse,
     updateCourse,
+    deleteCourse,
     addCourseGroup
   } = useCollegeData();
 
@@ -26,13 +28,29 @@ export const CoursesMasterView: React.FC = () => {
   const currentFaculty = faculty.find(
     f => f.id === user?.id || (user?.email && f.email?.toLowerCase() === user.email.toLowerCase())
   );
-  const hodDeptId = isHOD ? (currentFaculty?.departmentId || user?.facultyProfile?.departmentId || (user as any)?.departmentId) : undefined;
+  const hodDeptId = isHOD
+    ? currentFaculty?.departmentId ||
+      user?.facultyProfile?.departmentId ||
+      (user as any)?.departmentId ||
+      departments.find(
+        d => d.hodFacultyId === user?.id || (currentFaculty && d.hodFacultyId === currentFaculty.id)
+      )?.id
+    : undefined;
   const hodDept = departments.find(d => d.id === hodDeptId);
 
   const canCreate = can(activeRole, 'courses', 'create');
   const canEdit = can(activeRole, 'courses', 'update');
+  const canDelete = can(activeRole, 'courses', 'delete');
   const canManageGroups = can(activeRole, 'courses', 'create') || can(activeRole, 'courses', 'update');
   const isStudent = activeRole === 'STUDENT';
+
+  const canDeleteCourse = (course: Course) => {
+    if (!canDelete) return false;
+    if (isHOD) {
+      return Boolean(hodDeptId && course.departmentId === hodDeptId);
+    }
+    return true;
+  };
 
   const [filterDept, setFilterDept] = useState<string>(isHOD && hodDeptId ? hodDeptId : 'ALL');
   const [filterCat, setFilterCat] = useState<string>('ALL');
@@ -44,6 +62,9 @@ export const CoursesMasterView: React.FC = () => {
   const [isSavingCourse, setIsSavingCourse] = useState(false);
   const [courseError, setCourseError] = useState<string | null>(null);
   const [provisionalCourseToMap, setProvisionalCourseToMap] = useState<Course | null>(null);
+  const [courseToDelete, setCourseToDelete] = useState<Course | null>(null);
+  const [isDeletingCourse, setIsDeletingCourse] = useState(false);
+  const [deleteCourseError, setDeleteCourseError] = useState<string | null>(null);
 
   // Group creation modal
   const [isAddGroupOpen, setIsAddGroupOpen] = useState(false);
@@ -190,6 +211,19 @@ export const CoursesMasterView: React.FC = () => {
     }
 
     setIsAddGroupOpen(false);
+  };
+
+  const handleConfirmDeleteCourse = async () => {
+    if (!courseToDelete || !canDeleteCourse(courseToDelete)) return;
+    setDeleteCourseError(null);
+    setIsDeletingCourse(true);
+    const res = await deleteCourse(courseToDelete.id);
+    setIsDeletingCourse(false);
+    if (!res.success) {
+      setDeleteCourseError(res.error || 'Failed to delete course from database.');
+      return;
+    }
+    setCourseToDelete(null);
   };
 
   return (
@@ -405,25 +439,41 @@ export const CoursesMasterView: React.FC = () => {
               </div>
 
               {/* Actions */}
-              {(canManageGroups || canEdit) && (
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+              {(canManageGroups || canEdit || canDeleteCourse(course)) && (
+                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
                   {canManageGroups ? (
                     <button
                       onClick={() => handleOpenAddGroup(course)}
-                      className="text-xs text-purple-700 hover:text-purple-900 font-bold flex items-center gap-1"
+                      className="text-xs text-purple-700 hover:text-purple-900 font-bold flex items-center gap-1 cursor-pointer"
                     >
                       <Plus className="w-3.5 h-3.5" /> New Group
                     </button>
                   ) : <div />}
 
-                  {canEdit && (
-                    <button
-                      onClick={() => handleOpenEditCourse(course)}
-                      className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1"
-                    >
-                      <Edit2 className="w-3.5 h-3.5" /> Edit
-                    </button>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {canEdit && (
+                      <button
+                        onClick={() => handleOpenEditCourse(course)}
+                        className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" /> Edit
+                      </button>
+                    )}
+
+                    {canDeleteCourse(course) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeleteCourseError(null);
+                          setCourseToDelete(course);
+                        }}
+                        title="Delete Course"
+                        className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> Delete
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -689,6 +739,75 @@ export const CoursesMasterView: React.FC = () => {
           onClose={() => setProvisionalCourseToMap(null)}
           provisionalCourse={provisionalCourseToMap}
         />
+      )}
+
+      {/* Delete Course Confirmation Modal */}
+      {courseToDelete && (
+        <Modal
+          isOpen={!!courseToDelete}
+          onClose={() => {
+            if (isDeletingCourse) return;
+            setCourseToDelete(null);
+            setDeleteCourseError(null);
+          }}
+          title="Delete Course"
+          subtitle={`${courseToDelete.courseCode} — ${courseToDelete.courseTitle}`}
+          maxWidth="max-w-md"
+        >
+          {(() => {
+            const linkedOfferings = courseOfferings.filter(o => o.courseId === courseToDelete.id);
+            const linkedOfferingIds = new Set(linkedOfferings.map(o => o.id));
+            const linkedGroupsCount = courseGroups.filter(g => linkedOfferingIds.has(g.courseOfferingId)).length;
+            const linkedRegsCount = studentCourseRegistrations.filter(r =>
+              linkedOfferingIds.has(r.courseOfferingId)
+            ).length;
+
+            return (
+              <div className="space-y-4">
+                <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-900 space-y-1.5">
+                  <p className="font-bold">
+                    Are you sure you want to delete this course permanently?
+                  </p>
+                  <p>
+                    This removes <strong>{courseToDelete.courseCode}</strong> along with{' '}
+                    <strong>{linkedOfferings.length}</strong> offering(s),{' '}
+                    <strong>{linkedGroupsCount}</strong> batch group(s), and{' '}
+                    <strong>{linkedRegsCount}</strong> student registration(s).
+                  </p>
+                </div>
+
+                {deleteCourseError && (
+                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-800 font-medium">
+                    {deleteCourseError}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    disabled={isDeletingCourse}
+                    onClick={() => {
+                      setCourseToDelete(null);
+                      setDeleteCourseError(null);
+                    }}
+                    className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDeletingCourse}
+                    onClick={handleConfirmDeleteCourse}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>{isDeletingCourse ? 'Deleting...' : 'Delete Course'}</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+        </Modal>
       )}
     </div>
   );

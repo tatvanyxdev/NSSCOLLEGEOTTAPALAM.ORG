@@ -66,7 +66,11 @@ export const NoticesAndCircularsView: React.FC = () => {
 
   const openIssueModal = () => {
     const yr = new Date().getFullYear();
-    const rand = Math.floor(100 + Math.random() * 900);
+    const buf = new Uint32Array(1);
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      crypto.getRandomValues(buf);
+    }
+    const rand = 100 + (buf[0] % 900);
     setReferenceNumber(`NSS/CIR/${yr}/${rand}`);
     setTitle('');
     setDescription('');

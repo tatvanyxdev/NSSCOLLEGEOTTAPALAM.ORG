@@ -1,4 +1,4 @@
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { AggregatedAttendanceReport } from './attendanceAggregation';
 
 export type CsvExportTab = 'STUDENT_SUMMARY' | 'DATE_MATRIX' | 'CLASS_SUBJECT' | 'DAILY_REGISTER';
@@ -34,27 +34,50 @@ function downloadBlob(blob: Blob, filename: string): void {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function addStyledSheet(
+  wb: ExcelJS.Workbook,
+  name: string,
+  rows: (string | number)[][],
+  colWidths: number[],
+  styleFirstRowAsHeader = true
+) {
+  const ws = wb.addWorksheet(name.slice(0, 31));
+  rows.forEach((row, rowIdx) => {
+    const safeRow = row.map(cell =>
+      typeof cell === 'number' ? cell : sanitizeSpreadsheetCell(cell)
+    );
+    const addedRow = ws.addRow(safeRow);
+    if (styleFirstRowAsHeader && rowIdx === 0) {
+      addedRow.font = { bold: true };
+    }
+  });
+  ws.columns = colWidths.map(width => ({ width }));
+  return ws;
 }
 
 /**
- * Exports a clean multi-sheet Excel Workbook (.xlsx) compatible with Microsoft Excel and Google Sheets.
+ * Exports a clean multi-sheet Excel Workbook (.xlsx) using ExcelJS.
  */
-export function exportAttendanceToExcelWorkbook(
+export async function exportAttendanceToExcelWorkbook(
   report: AggregatedAttendanceReport,
   meta: {
     collegeName: string;
     scopeSummary: string;
     minPercentage: number;
   }
-): string {
-  const wb = XLSX.utils.book_new();
+): Promise<string> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'NSS College Ottapalam FYUGP ERP';
+  wb.created = new Date();
 
   // Sheet 1: Overview
-  const overviewRows = [
-    ['Institution', sanitizeSpreadsheetCell(meta.collegeName)],
-    ['Report Period', sanitizeSpreadsheetCell(report.dateWindow.label)],
-    ['Active Academic Scope', sanitizeSpreadsheetCell(meta.scopeSummary)],
+  const overviewRows: (string | number)[][] = [
+    ['Institution', meta.collegeName],
+    ['Report Period', report.dateWindow.label],
+    ['Active Academic Scope', meta.scopeSummary],
     ['Minimum Required Attendance %', `${meta.minPercentage}%`],
     ['Generated On', new Date().toLocaleString('en-IN')],
     ['', ''],
@@ -66,9 +89,7 @@ export function exportAttendanceToExcelWorkbook(
     ['Warning Zone Students', report.kpis.warningCount],
     ['Shortage Students (< Target %)', report.kpis.shortageCount]
   ];
-  const wsOverview = XLSX.utils.aoa_to_sheet(overviewRows);
-  wsOverview['!cols'] = [{ wch: 32 }, { wch: 52 }];
-  XLSX.utils.book_append_sheet(wb, wsOverview, 'Overview');
+  addStyledSheet(wb, 'Overview', overviewRows, [32, 52], false);
 
   // Sheet 2: Student Summary
   const studentHeaders = [
@@ -93,15 +114,15 @@ export function exportAttendanceToExcelWorkbook(
     'Official Attendance %',
     'Eligibility Status'
   ];
-  const studentData = report.scopedStudents.map(row => [
-    sanitizeSpreadsheetCell(row.student.rollNumber),
-    sanitizeSpreadsheetCell(row.student.admissionNumber),
-    sanitizeSpreadsheetCell(row.student.universityRegisterNumber || 'Pending'),
-    sanitizeSpreadsheetCell(row.student.fullName),
-    sanitizeSpreadsheetCell(row.dept?.code || 'DEPT'),
-    sanitizeSpreadsheetCell(row.prog?.name || 'Programme'),
+  const studentData: (string | number)[][] = report.scopedStudents.map(row => [
+    row.student.rollNumber,
+    row.student.admissionNumber,
+    row.student.universityRegisterNumber || 'Pending',
+    row.student.fullName,
+    row.dept?.code || 'DEPT',
+    row.prog?.name || 'Programme',
     `S${row.student.currentSemester || 1}`,
-    sanitizeSpreadsheetCell(row.policy === 'SESSION_STRICT' ? 'Session Half-Day Rule' : 'Hour-Wise'),
+    row.policy === 'SESSION_STRICT' ? 'Session Half-Day Rule' : 'Hour-Wise',
     row.conducted,
     row.present,
     row.od + row.specialDuty,
@@ -121,30 +142,12 @@ export function exportAttendanceToExcelWorkbook(
           ? 'ELIGIBLE'
           : 'NO SESSIONS'
   ]);
-  const wsStudents = XLSX.utils.aoa_to_sheet([studentHeaders, ...studentData]);
-  wsStudents['!cols'] = [
-    { wch: 10 },
-    { wch: 14 },
-    { wch: 18 },
-    { wch: 26 },
-    { wch: 12 },
-    { wch: 24 },
-    { wch: 10 },
-    { wch: 22 },
-    { wch: 13 },
-    { wch: 10 },
-    { wch: 14 },
-    { wch: 13 },
-    { wch: 10 },
-    { wch: 20 },
-    { wch: 13 },
-    { wch: 13 },
-    { wch: 13 },
-    { wch: 14 },
-    { wch: 18 },
-    { wch: 14 }
-  ];
-  XLSX.utils.book_append_sheet(wb, wsStudents, 'Student Summary');
+  addStyledSheet(
+    wb,
+    'Student Summary',
+    [studentHeaders, ...studentData],
+    [10, 14, 18, 26, 12, 24, 10, 22, 13, 10, 14, 13, 10, 20, 13, 13, 13, 14, 18, 14]
+  );
 
   // Sheet 3: Date-Period Register Matrix (if columns exist)
   if (report.matrixColumns.length > 0 && report.matrixRows.length > 0) {
@@ -158,28 +161,22 @@ export function exportAttendanceToExcelWorkbook(
       'Held',
       'Attendance %'
     ];
-    const matrixData = report.matrixRows.map(r => [
-      sanitizeSpreadsheetCell(r.student.rollNumber),
-      sanitizeSpreadsheetCell(r.student.universityRegisterNumber || r.student.admissionNumber),
-      sanitizeSpreadsheetCell(r.student.fullName),
-      sanitizeSpreadsheetCell(r.deptCode),
+    const matrixData: (string | number)[][] = report.matrixRows.map(r => [
+      r.student.rollNumber,
+      r.student.universityRegisterNumber || r.student.admissionNumber,
+      r.student.fullName,
+      r.deptCode,
       ...report.matrixColumns.map(c => r.cells[c.key] || '-'),
       r.attended,
       r.conducted,
       r.conducted > 0 ? `${r.percentage}%` : 'N/A'
     ]);
-    const wsMatrix = XLSX.utils.aoa_to_sheet([matrixHeaders, ...matrixData]);
-    wsMatrix['!cols'] = [
-      { wch: 10 },
-      { wch: 16 },
-      { wch: 24 },
-      { wch: 10 },
-      ...report.matrixColumns.map(() => ({ wch: 14 })),
-      { wch: 10 },
-      { wch: 8 },
-      { wch: 13 }
-    ];
-    XLSX.utils.book_append_sheet(wb, wsMatrix, 'Date Register Matrix');
+    addStyledSheet(
+      wb,
+      'Date Register Matrix',
+      [matrixHeaders, ...matrixData],
+      [10, 16, 24, 10, ...report.matrixColumns.map(() => 14), 10, 8, 13]
+    );
   }
 
   // Sheet 4: Class & Subject Breakdown
@@ -197,36 +194,26 @@ export function exportAttendanceToExcelWorkbook(
     'Shortage Count',
     'Warning Count'
   ];
-  const classData = report.scopedClasses.map(c => [
-    sanitizeSpreadsheetCell(c.courseCode),
-    sanitizeSpreadsheetCell(c.courseTitle),
-    sanitizeSpreadsheetCell(c.categoryName),
-    sanitizeSpreadsheetCell(c.groupName),
-    sanitizeSpreadsheetCell(`${c.departmentCode} - ${c.departmentName}`),
+  const classData: (string | number)[][] = report.scopedClasses.map(c => [
+    c.courseCode,
+    c.courseTitle,
+    c.categoryName,
+    c.groupName,
+    `${c.departmentCode} - ${c.departmentName}`,
     `S${c.semesterNumber}`,
-    sanitizeSpreadsheetCell(c.facultyName),
+    c.facultyName,
     c.enrolledCount,
     c.sessionsConducted,
     c.avgPercentage,
     c.shortageCount,
     c.warningCount
   ]);
-  const wsClasses = XLSX.utils.aoa_to_sheet([classHeaders, ...classData]);
-  wsClasses['!cols'] = [
-    { wch: 14 },
-    { wch: 28 },
-    { wch: 12 },
-    { wch: 18 },
-    { wch: 24 },
-    { wch: 10 },
-    { wch: 22 },
-    { wch: 16 },
-    { wch: 14 },
-    { wch: 16 },
-    { wch: 14 },
-    { wch: 14 }
-  ];
-  XLSX.utils.book_append_sheet(wb, wsClasses, 'Class & Subject Summary');
+  addStyledSheet(
+    wb,
+    'Class & Subject Summary',
+    [classHeaders, ...classData],
+    [14, 28, 12, 18, 24, 10, 22, 16, 14, 16, 14, 14]
+  );
 
   // Sheet 5: Detailed Session Logs
   const logHeaders = [
@@ -247,47 +234,37 @@ export function exportAttendanceToExcelWorkbook(
     'Topic Covered',
     'Remarks'
   ];
-  const logData = report.registerEntries.map(e => [
-    sanitizeSpreadsheetCell(e.date),
-    sanitizeSpreadsheetCell(e.periodLabel),
-    sanitizeSpreadsheetCell(e.departmentName),
-    sanitizeSpreadsheetCell(e.programmeName),
+  const logData: (string | number)[][] = report.registerEntries.map(e => [
+    e.date,
+    e.periodLabel,
+    e.departmentName,
+    e.programmeName,
     `S${e.semesterNumber}`,
-    sanitizeSpreadsheetCell(e.courseCode),
-    sanitizeSpreadsheetCell(e.courseTitle),
-    sanitizeSpreadsheetCell(e.groupName),
-    sanitizeSpreadsheetCell(e.facultyName),
-    sanitizeSpreadsheetCell(e.rollNumber),
-    sanitizeSpreadsheetCell(e.admissionNumber),
-    sanitizeSpreadsheetCell(e.universityRegNo),
-    sanitizeSpreadsheetCell(e.studentName),
-    sanitizeSpreadsheetCell(e.status),
-    sanitizeSpreadsheetCell(e.topicCovered),
-    sanitizeSpreadsheetCell(e.remarks)
+    e.courseCode,
+    e.courseTitle,
+    e.groupName,
+    e.facultyName,
+    e.rollNumber,
+    e.admissionNumber,
+    e.universityRegNo,
+    e.studentName,
+    e.status,
+    e.topicCovered,
+    e.remarks
   ]);
-  const wsLogs = XLSX.utils.aoa_to_sheet([logHeaders, ...logData]);
-  wsLogs['!cols'] = [
-    { wch: 12 },
-    { wch: 20 },
-    { wch: 20 },
-    { wch: 22 },
-    { wch: 10 },
-    { wch: 12 },
-    { wch: 26 },
-    { wch: 16 },
-    { wch: 20 },
-    { wch: 10 },
-    { wch: 14 },
-    { wch: 16 },
-    { wch: 24 },
-    { wch: 14 },
-    { wch: 24 },
-    { wch: 20 }
-  ];
-  XLSX.utils.book_append_sheet(wb, wsLogs, 'Session Logs');
+  addStyledSheet(
+    wb,
+    'Session Logs',
+    [logHeaders, ...logData],
+    [12, 20, 20, 22, 10, 12, 26, 16, 20, 10, 14, 16, 24, 14, 24, 20]
+  );
 
   const filename = buildSafeFilename('NSS_Attendance_Sheets', report.dateWindow.label, 'xlsx');
-  XLSX.writeFile(wb, filename);
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  });
+  downloadBlob(blob, filename);
   return filename;
 }
 

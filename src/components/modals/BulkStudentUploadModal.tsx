@@ -16,6 +16,7 @@ import {
   X,
   RefreshCw,
   Building2,
+  GraduationCap,
   Users,
   Eye,
   Filter
@@ -48,6 +49,7 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
   const [selectedDeptId, setSelectedDeptId] = useState<string>(
     isHOD && hodDeptId ? hodDeptId : departments[0]?.id || ''
   );
+  const [selectedYearOfStudy, setSelectedYearOfStudy] = useState<'AUTO' | '1' | '2' | '3' | '4'>('AUTO');
 
   const [file, setFile] = useState<File | null>(null);
   const [isParsing, setIsParsing] = useState(false);
@@ -100,8 +102,34 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
     }
   };
 
-  const handleDownloadTemplate = () => {
-    downloadStudentExcelTemplate(departments, hodDept?.name);
+  const handleDownloadTemplate = async () => {
+    try {
+      await downloadStudentExcelTemplate(departments, hodDept?.name);
+    } catch (err: any) {
+      setParseError(`Failed to generate template: ${err?.message || 'Unknown error'}`);
+    }
+  };
+
+  const resolveRowYearAndSemester = (row: ParsedStudentRow): { yearOfStudy: number; currentSemester: number } => {
+    if (selectedYearOfStudy === 'AUTO') {
+      const sem = Math.max(1, Math.min(8, row.currentSemester || 1));
+      const yr = row.yearOfStudy && row.yearOfStudy >= 1 && row.yearOfStudy <= 4
+        ? row.yearOfStudy
+        : Math.ceil(sem / 2);
+      return { yearOfStudy: yr, currentSemester: sem };
+    }
+
+    const targetYear = Number(selectedYearOfStudy);
+    const rowSem = Math.max(1, Math.min(8, row.currentSemester || 1));
+    const effectiveSemester =
+      row.hasExplicitSemester && Math.ceil(rowSem / 2) === targetYear
+        ? rowSem
+        : (targetYear - 1) * 2 + 1;
+
+    return {
+      yearOfStudy: targetYear,
+      currentSemester: effectiveSemester
+    };
   };
 
   const handleExecuteImport = async () => {
@@ -120,6 +148,7 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
     for (let i = 0; i < validRows.length; i++) {
       const row = validRows[i];
       const targetDeptId = isHOD && hodDeptId ? hodDeptId : row.matchedDepartmentId || selectedDeptId;
+      const { yearOfStudy, currentSemester } = resolveRowYearAndSemester(row);
 
       try {
         const studentPayload: Omit<Student, 'id' | 'createdAt'> = {
@@ -131,8 +160,8 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
           mobileNumber: row.mobileNumber || '9876543210',
           phone: row.mobileNumber || '9876543210',
           dateOfBirth: row.dateOfBirth || undefined,
-          currentSemester: row.currentSemester || 1,
-          yearOfStudy: Math.ceil((row.currentSemester || 1) / 2),
+          currentSemester,
+          yearOfStudy,
           admissionBatch: row.admissionBatch || '2026-2030',
           homeDepartmentId: targetDeptId,
           programmeId: programmes.find(p => p.departmentId === targetDeptId)?.id || programmes[0]?.id || 'prog-bsc-cs',
@@ -232,40 +261,71 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-6 overflow-y-auto space-y-5 flex-1">
-          {/* Target Department Selection */}
-          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5">
-              <Building2 className="w-4 h-4 text-slate-500 shrink-0" />
-              <div>
-                <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  Target Department
-                </p>
-                <p className="text-[11px] text-slate-500">
-                  {isHOD
-                    ? 'Students will be enrolled strictly under your department.'
-                    : 'Default department for rows where department column is blank.'}
-                </p>
+          {/* Target Department & Year of Study Configuration */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Target Department */}
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between gap-2.5">
+              <div className="flex items-start gap-2.5">
+                <Building2 className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Target Department
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    {isHOD
+                      ? 'Students will be enrolled strictly under your department.'
+                      : 'Default department when sheet department column is blank.'}
+                  </p>
+                </div>
               </div>
+
+              {isHOD ? (
+                <span className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-purple-700 border border-purple-200 self-start">
+                  {hodDept?.name || 'Department'}
+                </span>
+              ) : (
+                <select
+                  value={selectedDeptId}
+                  onChange={e => setSelectedDeptId(e.target.value)}
+                  disabled={isImporting || parsedRows.length > 0}
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-300 text-xs bg-white font-medium focus:ring-2 focus:ring-blue-500 outline-hidden disabled:opacity-60"
+                >
+                  {departments.map(d => (
+                    <option key={d.id} value={d.id}>
+                      {d.name} ({d.code})
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
-            {isHOD ? (
-              <span className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-purple-700 border border-purple-200">
-                {hodDept?.name || 'Department'}
-              </span>
-            ) : (
+            {/* Target Year of Study */}
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between gap-2.5">
+              <div className="flex items-start gap-2.5">
+                <GraduationCap className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Target Year of Study
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Auto-detects from sheet Semester/Year, or sets a specific class year.
+                  </p>
+                </div>
+              </div>
+
               <select
-                value={selectedDeptId}
-                onChange={e => setSelectedDeptId(e.target.value)}
-                disabled={isImporting || parsedRows.length > 0}
-                className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs bg-white font-medium focus:ring-2 focus:ring-blue-500 outline-hidden"
+                value={selectedYearOfStudy}
+                onChange={e => setSelectedYearOfStudy(e.target.value as 'AUTO' | '1' | '2' | '3' | '4')}
+                disabled={isImporting || Boolean(importResults?.completed)}
+                className="w-full px-3 py-1.5 rounded-lg border border-slate-300 text-xs bg-white font-medium focus:ring-2 focus:ring-blue-500 outline-hidden disabled:opacity-60"
               >
-                {departments.map(d => (
-                  <option key={d.id} value={d.id}>
-                    {d.name} ({d.code})
-                  </option>
-                ))}
+                <option value="AUTO">Auto-Detect from Sheet (Semester / Year)</option>
+                <option value="1">1st Year (Sem 1–2)</option>
+                <option value="2">2nd Year (Sem 3–4)</option>
+                <option value="3">3rd Year (Sem 5–6)</option>
+                <option value="4">4th Year Honours (Sem 7–8)</option>
               </select>
-            )}
+            </div>
           </div>
 
           {/* Drag & Drop Upload Zone */}
@@ -397,7 +457,7 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
                       <th className="py-2.5 px-3">Full Name</th>
                       <th className="py-2.5 px-3">Reg. Number</th>
                       <th className="py-2.5 px-3">Department</th>
-                      <th className="py-2.5 px-3">Sem & Batch</th>
+                      <th className="py-2.5 px-3">Year, Sem & Batch</th>
                       <th className="py-2.5 px-3">Contact</th>
                       <th className="py-2.5 px-3 text-right">Validation</th>
                     </tr>
@@ -410,7 +470,9 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
                         </td>
                       </tr>
                     ) : (
-                      displayRows.map(r => (
+                      displayRows.map(r => {
+                        const resolved = resolveRowYearAndSemester(r);
+                        return (
                         <tr
                           key={r.rowIndex}
                           className={r.isValid ? 'hover:bg-slate-50/50' : 'bg-rose-50/30 hover:bg-rose-50/50'}
@@ -423,8 +485,11 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
                           <td className="py-2 px-3 text-slate-700">
                             {r.matchedDepartmentName || r.departmentCodeOrName || 'Default'}
                           </td>
-                          <td className="py-2 px-3 text-slate-600">
-                            S{r.currentSemester} • {r.admissionBatch}
+                          <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
+                            <span className="inline-flex items-center gap-1 font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded mr-1.5 text-[10px]">
+                              Year {resolved.yearOfStudy}
+                            </span>
+                            S{resolved.currentSemester} • {r.admissionBatch}
                           </td>
                           <td className="py-2 px-3 text-slate-600">
                             {r.email || r.mobileNumber || '—'}
@@ -444,7 +509,8 @@ export const BulkStudentUploadModal: React.FC<BulkStudentUploadModalProps> = ({
                             )}
                           </td>
                         </tr>
-                      ))
+                        );
+                      })
                     )}
                   </tbody>
                 </table>

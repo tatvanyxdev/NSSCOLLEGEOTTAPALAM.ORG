@@ -69,7 +69,7 @@ export const mapStudentFromDb = (row: any): Student => ({
   rollNumber: row.roll_number || row.rollNumber || '',
   fullName: row.full_name || row.fullName || '',
   username: row.username || '',
-  password: row.password || row.password_hash || '',
+  password: '',
   email: row.email || '',
   phoneNumber: row.mobile_number || row.phone_number || row.phoneNumber || row.phone || '',
   phone: row.mobile_number || row.phone || row.phone_number || row.phoneNumber || '',
@@ -103,7 +103,7 @@ export const mapFacultyFromDb = (row: any): Faculty => ({
   qualification: row.qualification || '',
   profileImageUrl: row.profile_photo_url || row.profile_image_url || row.profileImageUrl || '',
   username: row.username || row.user_name || '',
-  password: row.password || '',
+  password: '',
   roles: Array.isArray(row.roles) ? row.roles : typeof row.roles === 'string' ? JSON.parse(row.roles) : ['TEACHER'],
   status: row.status || (row.is_active ? 'ACTIVE' : 'INACTIVE'),
   isActive: row.is_active !== undefined ? row.is_active : row.isActive !== undefined ? row.isActive : true

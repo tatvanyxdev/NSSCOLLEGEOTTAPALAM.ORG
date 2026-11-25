@@ -39,8 +39,8 @@ export const MaintenancePageView: React.FC<MaintenancePageViewProps> = ({
   onAdminLoginClick,
   isInlineBlock = false
 }) => {
-  const { settings, refreshFromSupabase } = useCollegeData();
-  const { user, activeRole, switchRole, isDevAuthMode } = useAuth();
+  const { settings, syncWithDatabase } = useCollegeData();
+  const { user, activeRole, switchRole } = useAuth();
 
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
   const [isChecking, setIsChecking] = useState(false);
@@ -102,8 +102,8 @@ export const MaintenancePageView: React.FC<MaintenancePageViewProps> = ({
     setStatusMessage(null);
     const start = performance.now();
     try {
-      if (refreshFromSupabase) {
-        await refreshFromSupabase();
+      if (syncWithDatabase) {
+        await syncWithDatabase();
       }
       const latency = Math.round(performance.now() - start);
       setPingLatency(latency > 0 ? latency : 28);
@@ -127,11 +127,11 @@ export const MaintenancePageView: React.FC<MaintenancePageViewProps> = ({
     }
   };
 
-  const handleAdminBypass = () => {
-    if (onAdminLoginClick) {
+  const handleAdminBypass = async () => {
+    if (user?.roles?.includes('SUPER_ADMIN')) {
+      await switchRole('SUPER_ADMIN');
+    } else if (onAdminLoginClick) {
       onAdminLoginClick();
-    } else {
-      switchRole('SUPER_ADMIN');
     }
     setShowAdminModal(false);
   };

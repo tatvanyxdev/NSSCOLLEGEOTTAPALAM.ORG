@@ -479,6 +479,31 @@ export const QuickActionsFloatingButton: React.FC<QuickActionsFloatingButtonProp
                   </button>
                 )}
 
+                {/* Full Onboarded Students List (All non-student roles) */}
+                {!isStudent && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsOpen(false);
+                      onNavigate('onboarded-students');
+                    }}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 hover:border-slate-300 bg-white hover:bg-slate-50 transition-all text-left flex items-center justify-between group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-slate-800 text-white flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                        <Users className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-900">Onboarded Students List</div>
+                        <p className="text-[10px] text-slate-500">
+                          Sort by department, class year, semester & export
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
+                  </button>
+                )}
+
                 {/* Export CSV (Tutor, HOD, Coordinator, Principal, Admin) */}
                 {canExportReports && (
                   <button

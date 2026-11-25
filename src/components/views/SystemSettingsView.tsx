@@ -65,7 +65,7 @@ export const SystemSettingsView: React.FC = () => {
     updateTimetablePeriods
   } = useCollegeData();
 
-  const { activeRole, isDevAuthMode } = useAuth();
+  const { activeRole } = useAuth();
   const canRead = can(activeRole, 'settings', 'read');
   const canUpdate = can(activeRole, 'settings', 'update');
   const canReset = activeRole === 'SUPER_ADMIN';

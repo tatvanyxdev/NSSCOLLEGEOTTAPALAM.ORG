@@ -11,7 +11,7 @@ export const SecurityQuarantineOverlay: React.FC = () => {
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [isUnlocking, setIsUnlocking] = useState(false);
 
-  const isSuperAdmin = activeRole === 'SUPER_ADMIN' || user?.roles?.includes('SUPER_ADMIN');
+  const isSuperAdmin = Boolean(user?.roles?.includes('SUPER_ADMIN'));
   const deviceId = getDeviceFingerprint();
 
   const checkStatus = () => {
@@ -50,19 +50,21 @@ export const SecurityQuarantineOverlay: React.FC = () => {
 
   if (!isQuarantined) return null;
 
-  const handleManualUnlock = () => {
+  const handleManualUnlock = async () => {
     setUnlockError(null);
+    if (!isSuperAdmin) {
+      setUnlockError('Only an authenticated Super Administrator session can release a quarantined device.');
+      return;
+    }
     setIsUnlocking(true);
-
-    // Master unlock code or SuperAdmin session
-    if (unlockCode.trim() === 'NSS-SECURE-2026' || isSuperAdmin) {
-      securityShieldService.unquarantineDevice(deviceId);
+    const res = await securityShieldService.unquarantineDevice(deviceId);
+    setIsUnlocking(false);
+    if (res.success) {
       setIsQuarantined(false);
       setUnlockCode('');
     } else {
-      setUnlockError('Invalid security recovery code. Authorization denied.');
+      setUnlockError(res.error || 'Server rejected device unquarantine request.');
     }
-    setIsUnlocking(false);
   };
 
   return (
@@ -78,7 +80,7 @@ export const SecurityQuarantineOverlay: React.FC = () => {
           </div>
 
           <span className="px-3 py-1 rounded-full text-[11px] font-mono font-bold tracking-widest bg-rose-500/20 text-rose-400 border border-rose-500/30 uppercase">
-            Anti-Hack Defense Active
+            Security Defense Active
           </span>
 
           <h2 className="text-xl sm:text-2xl font-black font-display tracking-tight text-white mt-3">
@@ -111,43 +113,26 @@ export const SecurityQuarantineOverlay: React.FC = () => {
           {/* Recovery / Unlock section */}
           <div className="mt-6 pt-5 border-t border-slate-800 space-y-3">
             {isSuperAdmin ? (
-              <button
-                type="button"
-                onClick={() => {
-                  securityShieldService.unquarantineDevice(deviceId);
-                  setIsQuarantined(false);
-                }}
-                className="w-full py-3 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-700/30 transition-all cursor-pointer"
-              >
-                <Unlock className="w-4 h-4" />
-                <span>SuperAdmin Override: Restore Connection</span>
-              </button>
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  disabled={isUnlocking}
+                  onClick={handleManualUnlock}
+                  className="w-full py-3 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-700/30 transition-all cursor-pointer"
+                >
+                  <Unlock className="w-4 h-4" />
+                  <span>{isUnlocking ? 'Verifying Server Authorization...' : 'SuperAdmin Override: Restore Connection'}</span>
+                </button>
+                {unlockError && <p className="text-[11px] text-rose-400 font-semibold">{unlockError}</p>}
+              </div>
             ) : (
               <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
-                    <KeyRound className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
-                    <input
-                      type="password"
-                      placeholder="Enter Admin Recovery Code"
-                      value={unlockCode}
-                      onChange={e => setUnlockCode(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleManualUnlock}
-                    disabled={isUnlocking || !unlockCode.trim()}
-                    className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all"
-                  >
-                    <Unlock className="w-3.5 h-3.5" />
-                    <span>Unlock</span>
-                  </button>
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[11px] text-slate-300 flex items-center gap-2 justify-center">
+                  <Lock className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Device release requires verified Super Administrator clearance in the SOC panel.</span>
                 </div>
-                {unlockError && <p className="text-[11px] text-rose-400 font-semibold">{unlockError}</p>}
                 <p className="text-[11px] text-slate-500">
-                  Please contact college IT administration or SuperAdmin to reset your device quarantine status.
+                  Please contact college IT administration or SuperAdmin with Device Hash <span className="font-mono text-slate-300">{deviceId}</span>.
                 </p>
               </div>
             )}
